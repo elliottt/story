@@ -1,3 +1,5 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
 module Unify where
 
 import Types
@@ -26,6 +28,9 @@ mgu env0 t1 t2 = runId (runExceptionT (go env0 t1 t2))
     do env' <- go env f g
        go env' x y
 
+  go env (TBound i) (TBound j)
+    | i == j = return env
+
   go env (TVar i) (TVar j)
     | i == j = return env
 
@@ -52,6 +57,9 @@ match env0 t1 t2 = runId (runExceptionT (go env0 t1 t2))
     do env' <- go env f g
        go env' x y
 
+  go env (TBound i) (TBound j)
+    | i == j = return env
+
   go env (TVar i) (TVar j)
     | i == j = return env
 
@@ -64,23 +72,48 @@ match env0 t1 t2 = runId (runExceptionT (go env0 t1 t2))
   go _ l r =
     raise (MatchingFailed l r)
 
+newtype Zonk a = Zonk { unZonk :: ReaderT Env (StateT (Set.Set Int)
+                                              (ExceptionT Error Id)) a
+                      } deriving (Functor,Monad)
+
 -- | Remove unification variables from a term.
-zonk :: Env -> Term -> Either Error Term
-zonk env = runId . runExceptionT . go Set.empty
-  where
+zonk :: Terms tm => Env -> tm -> Either Error tm
+zonk env tm = case runM (unZonk (zonk' tm)) env Set.empty of
+  Right (a,_) -> Right a
+  Left err    -> Left err
 
-  go seen (TApp l r) =
-    do l' <- go seen l
-       r' <- go seen r
-       return (TApp l' r')
+zonkVar :: Var -> Zonk Term
+zonkVar v =
+  do env  <- Zonk ask
+     seen <- Zonk get
+     let i = varIndex v
+     case Map.lookup i env of
+       Just tm' | Set.member i seen -> Zonk (raise (OccursCheckFailed (TVar v) tm'))
+                | otherwise         -> do Zonk (set (Set.insert i seen))
+                                          zonk' tm'
+       Nothing                      -> return (TVar v)
 
-  go seen tm@(TVar v) =
-    case Map.lookup i env of
-      Just tm' | Set.member i seen -> raise (OccursCheckFailed tm tm')
-               | otherwise         -> go (Set.insert i seen) tm'
-      Nothing                      -> return tm
+class Terms tm where
+  zonk' :: tm -> Zonk tm
+
+instance Terms tm => Terms [tm] where
+  zonk' = mapM zonk'
+
+instance Terms Term where
+  zonk' = go
     where
-    i = varIndex v
+    go (TApp l r) =
+      do l' <- go l
+         r' <- go r
+         return (TApp l' r')
 
-  go _ tm =
-    return tm
+    go (TVar v) = zonkVar v
+
+    go tm =
+      return tm
+
+instance Terms Action where
+  zonk' act =
+    do pre  <- zonk' (aPrecond act)
+       post <- zonk' (aPostcond act)
+       return act { aPrecond = pre, aPostcond = post }
