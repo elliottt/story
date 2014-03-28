@@ -10,36 +10,6 @@ import qualified Data.Set as Set
 import           MonadLib
 
 
-data Step = Start
-          | Prim Action
-          | Finish
-            deriving (Show,Eq,Ord)
-
-data Constraint = Before Step Step
-                  deriving (Show,Eq,Ord)
-
-data CausalLink = Link Step Step
-                  deriving (Show,Eq,Ord)
-
-type Assumps = [Term]
-
-type Goals = [Term]
-
-data Plan = Plan { planActions     :: Set.Set Step
-                 , planConstraints :: Set.Set Constraint
-                 , planLinks       :: Set.Set CausalLink
-                 , planInit        :: Assumps
-                 , planGoals       :: Goals
-                 } deriving (Show)
-
-emptyPlan :: Assumps -> Goals -> Plan
-emptyPlan assumps goals =
-  Plan { planActions     = Set.fromList [Start, Finish]
-       , planConstraints = Set.fromList [Start `Before` Finish]
-       , planLinks       = Set.empty
-       , planInit        = assumps
-       , planGoals       = goals
-       }
 
 
 -- Planning Monad --------------------------------------------------------------
@@ -97,18 +67,18 @@ zonk tm = PlanM $
 
 -- | Return the instantiated action, and extended environment that achieves the
 -- condition p.
-achieves :: Schema Action -> Term -> PlanM Action
+achieves :: Schema Operator -> Term -> PlanM Operator
 achieves op p =
-  do act <- freshInst op
-     msum [ match c p >> zonk act | c <- aPostcond act ]
+  do iop <- freshInst op
+     msum [ match c p >> zonk iop | c <- oPostcond iop ]
 
 
 -- Testing ---------------------------------------------------------------------
 
-test = Forall [a,b] Action
-  { aName     = "test"
-  , aPrecond  = []
-  , aPostcond = [tmApp (TCon "At") [TBound a, TBound b]]
+test = Forall [a,b] Operator
+  { oName     = "test"
+  , oPrecond  = []
+  , oPostcond = [tmApp (TCon "At") [TBound a, TBound b]]
   }
   where
   a = Var (Just "a") 0

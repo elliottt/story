@@ -112,8 +112,9 @@ instance Terms Term where
     go tm =
       return tm
 
-instance Terms Action where
-  zonk' act =
-    do pre  <- zonk' (aPrecond act)
-       post <- zonk' (aPostcond act)
-       return act { aPrecond = pre, aPostcond = post }
+instance Terms Operator where
+  zonk' op =
+    do pre  <- zonk' (oPrecond  op)
+       post <- zonk' (oPostcond op)
+       return op { oPrecond  = pre
+                 , oPostcond = post }
