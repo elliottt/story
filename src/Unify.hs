@@ -1,120 +1,178 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 
-module Unify where
+module Unify (
+    Env
+  , Error
+  , Zonk(), zonk
+  , Unify(), mgu, match
+  ) where
 
 import Types
 
+import           Control.Applicative
 import qualified Data.Map as Map
 import qualified Data.Set as Set
+import           Data.Traversable ( traverse )
 import           MonadLib
 
 
--- | Variable environment.
-type Env = Map.Map Int Term
+-- External Interface ----------------------------------------------------------
 
-data Error = UnificationFailed Term Term
-           | MatchingFailed    Term Term
+-- | Variable environment.
+type Env = Map.Map Var Term
+
+data Error = UnificationFailed
+           | MatchingFailed
            | OccursCheckFailed Term Term
              deriving (Show)
 
--- | Unify two terms.
-mgu :: Env -> Term -> Term -> Either Error Env
-mgu env0 t1 t2 = runId (runExceptionT (go env0 t1 t2))
-  where
-  go env (TCon a) (TCon b)
-    | a == b = return env
+mgu :: Unify a => Env -> a -> a -> Either Error Env
+mgu env a a' = case runUnifyM env (mgu' a a') of
+                 Right (_,RW { .. }) -> Right rwEnv
+                 Left err            -> Left err
 
-  go env (TApp f x) (TApp g y) =
-    do env' <- go env f g
-       go env' x y
+match :: Unify a => Env -> a -> a -> Either Error Env
+match env a a' = case runUnifyM env (match' a a') of
+                   Right (_,RW { .. }) -> Right rwEnv
+                   Left err            -> Left err
 
-  go env (TBound i) (TBound j)
-    | i == j = return env
+-- | Remove variables from term.
+zonk :: Zonk a => Env -> a -> Either Error a
+zonk env a = case runUnifyM env (zonk' a) of
+               Right (a,_) -> Right a
+               Left err    -> Left err
 
-  go env (TVar i) (TVar j)
-    | i == j = return env
+-- Unification Monad -----------------------------------------------------------
 
-  go env (TVar v) r
-    | Just l' <- Map.lookup i env = go env l' r
-    | otherwise                   = return (Map.insert i r env)
-    where
-    i = varIndex v
+data RW = RW { rwSeen :: Set.Set Var
+             , rwEnv  :: Env
+             }
 
-  go env l r@TVar{} =
-    go env r l
+newtype UnifyM a = UnifyM { unUnifyM :: StateT RW (ExceptionT Error Id) a
+                          } deriving (Functor,Applicative,Monad)
 
-  go _ l r =
-    raise (UnificationFailed l r)
+instance ExceptionM UnifyM Error where
+  raise e = UnifyM (raise e)
 
--- | Match two terms with each other.
-match :: Env -> Term -> Term -> Either Error Env
-match env0 t1 t2 = runId (runExceptionT (go env0 t1 t2))
-  where
-  go env (TCon a) (TCon b)
-    | a == b = return env
+runUnifyM :: Env -> UnifyM a -> Either Error (a,RW)
+runUnifyM env m = runM (unUnifyM m) RW { rwSeen = Set.empty, rwEnv = env }
 
-  go env (TApp f x) (TApp g y) =
-    do env' <- go env f g
-       go env' x y
+bindVar :: Var -> Term -> UnifyM (Maybe Term)
+bindVar i tm = UnifyM $
+  do rw <- get
+     case Map.lookup i (rwEnv rw) of
+       Just tm' -> return (Just tm')
+       Nothing  -> do set rw { rwEnv = Map.insert i tm (rwEnv rw) }
+                      return Nothing
 
-  go env (TBound i) (TBound j)
-    | i == j = return env
+seenVar :: Var -> UnifyM ()
+seenVar v = UnifyM $ do rw <- get
+                        set rw { rwSeen = Set.insert v (rwSeen rw) }
 
-  go env (TVar i) (TVar j)
-    | i == j = return env
-
-  go env (TVar v) r
-    | Just l' <- Map.lookup i env = go env l' r
-    | otherwise                   = return (Map.insert i r env)
-    where
-    i = varIndex v
-
-  go _ l r =
-    raise (MatchingFailed l r)
-
-newtype Zonk a = Zonk { unZonk :: ReaderT Env (StateT (Set.Set Int)
-                                              (ExceptionT Error Id)) a
-                      } deriving (Functor,Monad)
-
--- | Remove unification variables from a term.
-zonk :: Terms tm => Env -> tm -> Either Error tm
-zonk env tm = case runM (unZonk (zonk' tm)) env Set.empty of
-  Right (a,_) -> Right a
-  Left err    -> Left err
-
-zonkVar :: Var -> Zonk Term
+-- | Replace a variable with its binding.
+zonkVar :: Var -> UnifyM Term
 zonkVar v =
-  do env  <- Zonk ask
-     seen <- Zonk get
-     let i = varIndex v
-     case Map.lookup i env of
-       Just tm' | Set.member i seen -> Zonk (raise (OccursCheckFailed (TVar v) tm'))
-                | otherwise         -> do Zonk (set (Set.insert i seen))
-                                          zonk' tm'
-       Nothing                      -> return (TVar v)
+  do RW { .. } <- UnifyM get
+     case Map.lookup v rwEnv of
+       Just tm' | Set.member v rwSeen -> raise (OccursCheckFailed (TVar v) tm')
+                | otherwise           -> do seenVar v
+                                            zonk' tm'
+       Nothing                        -> return (TVar v)
 
-class Terms tm where
-  zonk' :: tm -> Zonk tm
 
-instance Terms tm => Terms [tm] where
-  zonk' = mapM zonk'
+-- Primitive Unification -------------------------------------------------------
 
-instance Terms Term where
-  zonk' = go
-    where
-    go (TApp l r) =
-      do l' <- go l
-         r' <- go r
-         return (TApp l' r')
+class Zonk a where
+  zonk'  :: a -> UnifyM a
 
-    go (TVar v) = zonkVar v
+instance Zonk a => Zonk [a] where
+  zonk' = traverse zonk'
 
-    go tm =
-      return tm
+instance Zonk Operator where
+  zonk' (Operator n ps qs) =
+    do oPrecond  <- zonk' ps
+       oPostcond <- zonk' qs
+       return Operator { oName = n, .. }
 
-instance Terms Operator where
-  zonk' op =
-    do pre  <- zonk' (oPrecond  op)
-       post <- zonk' (oPostcond op)
-       return op { oPrecond  = pre
-                 , oPostcond = post }
+instance Zonk Pred where
+  zonk' (Pred n p args) = Pred n p `fmap` zonk' args
+
+instance Zonk Term where
+  zonk' tm = case tm of
+    TVar v -> do rw <- UnifyM get
+                 case Map.lookup v (rwEnv rw) of
+                   Just tm' -> zonk' tm'
+                   Nothing  -> return tm
+    _      -> return tm
+
+
+class Zonk a => Unify a where
+  mgu'   :: a -> a -> UnifyM ()
+  match' :: a -> a -> UnifyM ()
+
+instance Unify a => Unify [a] where
+  mgu' (a:as) (b:bs) = do mgu' a b
+                          mgu' as bs
+  mgu' _      _      = raise UnificationFailed
+
+  match' (a:as) (b:bs) = do match' a b
+                            match' as bs
+  match' _      _      = raise MatchingFailed
+
+instance Unify Pred where
+  mgu' (Pred n1 p1 args1) (Pred n2 p2 args2)
+    | n1 == n2 && p1 == p2 =
+      mgu' args1 args2
+
+    | otherwise =
+      raise UnificationFailed
+
+  match' (Pred n1 p1 args1) (Pred n2 p2 args2)
+    | n1 == n2 && p1 == p2 =
+      match' args1 args2
+
+    | otherwise =
+      raise MatchingFailed
+
+instance Unify Term where
+  -- generalized variables only unify with themselves
+  mgu' (TGen v1) (TGen v2) | v1 == v2 = return ()
+
+  -- constructors only unify with themselves
+  mgu' (TCon c1) (TCon c2) | c1 == c2 = return ()
+
+  mgu' (TVar v1) (TVar v2) | v1 == v2 = return ()
+
+  mgu' (TVar v1) b =
+    do mb <- bindVar v1 b
+       case mb of
+         Just a  -> mgu' a b
+         Nothing -> return ()
+
+  mgu' a (TVar v2) =
+    do mb <- bindVar v2 a
+       case mb of
+         Just b  -> mgu' a b
+         Nothing -> return ()
+
+  mgu' _ _ = raise UnificationFailed
+
+
+  -- generalized variables only unify with themselves
+  match' (TGen v1) (TGen v2) | v1 == v2 = return ()
+
+  -- constructors only unify with themselves
+  match' (TCon c1) (TCon c2) | c1 == c2 = return ()
+
+  match' (TVar v1) (TVar v2) | v1 == v2 = return ()
+
+  -- matching only allows variables to be instantiated on the LHS
+  match' (TVar v1) b =
+    do mb <- bindVar v1 b
+       case mb of
+         Just a  -> mgu' a b
+         Nothing -> return ()
+
+  match' _ _ = raise UnificationFailed

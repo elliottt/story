@@ -1,26 +1,33 @@
 module Types where
 
 import           Control.Monad ( guard )
+import           Data.Function ( on )
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 
 
-data Term = TCon String
-          | TVar Var
-          | TBound Var
-          | TApp Term Term
+data Pred = Pred Bool String [Term]
+            deriving (Eq,Show,Ord)
+
+data Term = TVar Var
+          | TGen Var
+          | TCon String
             deriving (Eq,Show,Ord)
 
 data Var = Var { varDisplay :: Maybe String
                , varIndex   :: Int
-               } deriving (Eq,Show,Ord)
+               } deriving (Show)
 
-tmApp :: Term -> [Term] -> Term
-tmApp f xs = foldl TApp f xs
+instance Eq Var where
+  (==) = (==) `on` varIndex
+  (/=) = (/=) `on` varIndex
 
--- | Negate a term.
-tmNot :: Term -> Term
-tmNot tm = tmApp (TCon "not") [tm]
+instance Ord Var where
+  compare = compare `on` varIndex
+
+-- | Negate a predicate.
+tmNot :: Pred -> Pred
+tmNot (Pred n p ts) = Pred (not n) p ts
 
 
 -- Operators -------------------------------------------------------------------
@@ -28,8 +35,8 @@ tmNot tm = tmApp (TCon "not") [tm]
 type Operators = [Schema Operator]
 
 data Operator = Operator { oName     :: String
-                         , oPrecond  :: [Term]
-                         , oPostcond :: [Term]
+                         , oPrecond  :: [Pred]
+                         , oPostcond :: [Pred]
                          } deriving (Show,Eq,Ord)
 
 
@@ -51,9 +58,11 @@ class Inst a where
 instance Inst a => Inst [a] where
   inst as = map (inst as)
 
+instance Inst Pred where
+  inst as (Pred neg p ts) = Pred neg p (inst as ts)
+
 instance Inst Term where
-  inst as (TApp l r) = TApp (inst as l) (inst as r)
-  inst as (TBound v) = as !! varIndex v
+  inst as (TGen v) = as !! varIndex v
   inst _  tm         = tm
 
 instance Inst Operator where
@@ -63,10 +72,11 @@ instance Inst Operator where
 
 -- Plans -----------------------------------------------------------------------
 
-data Step = Step { sName        :: String
-                 , sOpenPrecond :: [Term]
-                 , sPrecond     :: [Term]
-                 , sPostcond    :: [Term]
+type Domain = [Schema Operator]
+
+data Step = Step { sName     :: String
+                 , sPrecond  :: [Term]
+                 , sPostcond :: [Term]
                  } deriving (Show)
 
 -- | Step a must come before step b.
@@ -86,15 +96,21 @@ data StepId = StartId     -- ^ Unique id for the starting step
             | FinishId    -- ^ Unique id for the ending step
               deriving (Show,Eq,Ord)
 
-data Plan = Plan { planSteps       :: Map.Map StepId Step
+data SubGoal = SubGoal { sgStepId :: !StepId
+                       , sgTerm   :: Term
+                       } deriving (Show,Eq,Ord)
+
+data Plan = Plan { planSteps :: Map.Map StepId Step
                    -- ^ The steps
-                 , planOpenSteps   :: Set.Set StepId
+                 , planSubGoals :: Set.Set SubGoal
+                   -- ^ Open constraints to be resolved.
+                 , planOpenSteps :: Set.Set StepId
                    -- ^ Steps with open preconditions
                  , planConstraints :: Set.Set Constraint
                    -- ^ Ordering constraints between steps
-                 , planLinks       :: Set.Set CausalLink
+                 , planLinks :: Set.Set CausalLink
                    -- ^ Causal links between steps
-                 , planNextStepId  :: !Int
+                 , planNextStepId :: !Int
                    -- ^ The next available step identifier
                  } deriving (Show)
 
@@ -102,20 +118,22 @@ emptyPlan :: Assumps -> Goals -> Plan
 emptyPlan assumps goals =
   Plan { planSteps       = Map.fromList [ (StartId, startStep)
                                         , (FinishId, finishStep) ]
-       , planOpenSteps   = Set.fromList [ FinishId ]
+       , planSubGoals    = Set.fromList (map mkSubGoal goals)
+       , planOpenSteps   = Set.fromList [FinishId]
        , planConstraints = Set.fromList [StartId `Before` FinishId]
        , planLinks       = Set.empty
        , planNextStepId  = 0
        }
   where
   -- the start step asserts all assumptions as post-conditions.
-  startStep  = Step { sName        = "<start>"
-                    , sOpenPrecond = []
-                    , sPrecond     = []
-                    , sPostcond    = assumps }
+  startStep  = Step { sName     = "<start>"
+                    , sPrecond  = []
+                    , sPostcond = assumps }
 
   -- the finish step has only open preconditions, the goals of the plan.
-  finishStep = Step { sName        = "<finish>"
-                    , sOpenPrecond = goals
-                    , sPrecond     = []
-                    , sPostcond    = [] }
+  finishStep = Step { sName     = "<finish>"
+                    , sPrecond  = []
+                    , sPostcond = [] }
+
+  mkSubGoal g = SubGoal { sgStepId = FinishId
+                        , sgTerm   = g }
