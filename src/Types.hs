@@ -80,60 +80,18 @@ data Step = Step { sName     :: String
                  } deriving (Show)
 
 -- | Step a must come before step b.
-data Constraint = Before StepId StepId
+data Constraint = Action :< Action
                   deriving (Show,Eq,Ord)
 
 -- | Causal links: between steps a and b, condition c is protected.
-data CausalLink = Link StepId Term StepId
+data CausalLink = Link Action Term Action
                   deriving (Show,Eq,Ord)
 
 type Assumps = [Term]
 
 type Goals = [Term]
 
-data StepId = StartId     -- ^ Unique id for the starting step
-            | StepId !Int -- ^ Generic step ids
-            | FinishId    -- ^ Unique id for the ending step
+data Action = Start
+            | Inst Int String [Term]
+            | Finish
               deriving (Show,Eq,Ord)
-
-data SubGoal = SubGoal { sgStepId :: !StepId
-                       , sgTerm   :: Term
-                       } deriving (Show,Eq,Ord)
-
-data Plan = Plan { planSteps :: Map.Map StepId Step
-                   -- ^ The steps
-                 , planSubGoals :: Set.Set SubGoal
-                   -- ^ Open constraints to be resolved.
-                 , planOpenSteps :: Set.Set StepId
-                   -- ^ Steps with open preconditions
-                 , planConstraints :: Set.Set Constraint
-                   -- ^ Ordering constraints between steps
-                 , planLinks :: Set.Set CausalLink
-                   -- ^ Causal links between steps
-                 , planNextStepId :: !Int
-                   -- ^ The next available step identifier
-                 } deriving (Show)
-
-emptyPlan :: Assumps -> Goals -> Plan
-emptyPlan assumps goals =
-  Plan { planSteps       = Map.fromList [ (StartId, startStep)
-                                        , (FinishId, finishStep) ]
-       , planSubGoals    = Set.fromList (map mkSubGoal goals)
-       , planOpenSteps   = Set.fromList [FinishId]
-       , planConstraints = Set.fromList [StartId `Before` FinishId]
-       , planLinks       = Set.empty
-       , planNextStepId  = 0
-       }
-  where
-  -- the start step asserts all assumptions as post-conditions.
-  startStep  = Step { sName     = "<start>"
-                    , sPrecond  = []
-                    , sPostcond = assumps }
-
-  -- the finish step has only open preconditions, the goals of the plan.
-  finishStep = Step { sName     = "<finish>"
-                    , sPrecond  = []
-                    , sPostcond = [] }
-
-  mkSubGoal g = SubGoal { sgStepId = FinishId
-                        , sgTerm   = g }

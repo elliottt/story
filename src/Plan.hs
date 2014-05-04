@@ -6,13 +6,16 @@ import           Types
 import qualified Unify
 
 import           Control.Applicative
+import qualified Data.Map as Map
 import           Data.Monoid ( mempty )
 import qualified Data.Set as Set
 import           MonadLib
 
 
-pop :: Domain -> Plan -> Maybe Plan
-pop d p = runPlanM p (solveGoals d p)
+type Plan = [Action]
+
+pop :: Domain -> Assumps -> Goals -> Maybe Plan
+pop d as gs = runPlanM d as (solveGoals (map (Goal Finish) gs))
 
 
 -- Planning Monad --------------------------------------------------------------
@@ -21,17 +24,27 @@ newtype PlanM a = PlanM { unPlanM :: StateT RW (ChoiceT Id) a
                         } deriving (Functor,Applicative,Monad,Alternative
                                    ,MonadPlus)
 
-data RW = RW { rwFresh :: Int
-             , rwEnv   :: Unify.Env
-             , rwPlan  :: Plan
+data RW = RW { rwFresh     :: Int
+             , rwEnv       :: Unify.Env
+             , rwActions   :: Set.Set Action
+             , rwLinks     :: Set.Set CausalLink
+             , rwOrderings :: Set.Set Constraint
+             , rwAgenda    :: Set.Set Goal
              }
 
-runPlanM :: Plan -> PlanM a -> Maybe a
-runPlanM p m = fmap fst (runId (findOne (runStateT rw (unPlanM m))))
+data Goal = Goal { gAction :: Action
+                 , gTerm   :: Term
+                 } deriving (Show,Eq,Ord)
+
+runPlanM :: Domain -> Assumps -> PlanM a -> Maybe a
+runPlanM p as m = fmap fst (runId (findOne (runStateT rw (unPlanM m))))
   where
-  rw = RW { rwFresh = 0
-          , rwEnv   = mempty
-          , rwPlan  = p
+  rw = RW { rwFresh     = 0
+          , rwEnv       = Map.empty
+          , rwActions   = Set.fromList [Start,Finish]
+          , rwLinks     = Set.empty
+          , rwOrderings = Set.singleton (Start :< Finish)
+          , rwAgenda    = Set.empty
           }
 
 getEnv :: PlanM Unify.Env
@@ -81,15 +94,8 @@ achieves op p =
 
 -- Planner ---------------------------------------------------------------------
 
-solveGoals :: Domain -> Plan -> PlanM Plan
-solveGoals d p
-  | Set.null (planSubGoals p) = return p
-  | otherwise                 =
-    do (p',g) <- chooseSubGoal p
-       undefined
-
-chooseSubGoal :: Plan -> PlanM (Plan,SubGoal)
-chooseSubGoal p = undefined
+solveGoals :: [Goal] -> PlanM [Action]
+solveGoals _ = undefined
 
 
 -- Testing ---------------------------------------------------------------------
