@@ -1,8 +1,12 @@
+{-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE OverloadedStrings #-}
+
 module Types where
 
 import           Control.Monad ( guard )
 import           Data.Function ( on )
 import qualified Data.Map as Map
+import           Data.String ( IsString(..) )
 import qualified Data.Set as Set
 
 
@@ -13,6 +17,9 @@ data Term = TVar Var
           | TGen Var
           | TCon String
             deriving (Eq,Show,Ord)
+
+instance IsString Term where
+  fromString = TCon
 
 data Var = Var { varDisplay :: Maybe String
                , varIndex   :: Int
@@ -44,6 +51,12 @@ data Operator = Operator { oName     :: String
 
 data Schema a = Forall [Var] a
                 deriving (Show)
+
+forall :: [String] -> ([Term] -> a) -> Schema a
+forall ts mkBody = Forall vs (mkBody (map TGen vs))
+  where
+  vs = [ Var (Just t) i | i <- [ 0 .. ]
+                        | t <- ts ]
 
 instSchema :: Inst a => [Term] -> Schema a -> Maybe a
 instSchema ts (Forall vs a) =
@@ -79,17 +92,13 @@ data Step = Step { sName     :: String
                  , sPostcond :: [Term]
                  } deriving (Show)
 
--- | Step a must come before step b.
-data Constraint = Action :< Action
-                  deriving (Show,Eq,Ord)
-
 -- | Causal links: between steps a and b, condition c is protected.
 data CausalLink = Link Action Term Action
                   deriving (Show,Eq,Ord)
 
-type Assumps = [Term]
+type Assumps = [Pred]
 
-type Goals = [Term]
+type Goals = [Pred]
 
 data Action = Start
             | Inst Int String [Term]

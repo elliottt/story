@@ -17,6 +17,8 @@ import qualified Data.Set as Set
 import           Data.Traversable ( traverse )
 import           MonadLib
 
+import Debug.Trace
+
 
 -- External Interface ----------------------------------------------------------
 
@@ -90,6 +92,11 @@ class Zonk a where
 instance Zonk a => Zonk [a] where
   zonk' = traverse zonk'
 
+instance (Zonk a, Zonk b) => Zonk (a,b) where
+  zonk' (a,b) = do a' <- zonk' a
+                   b' <- zonk' b
+                   return (a',b')
+
 instance Zonk Operator where
   zonk' (Operator n ps qs) =
     do oPrecond  <- zonk' ps
@@ -119,7 +126,15 @@ instance Unify a => Unify [a] where
 
   match' (a:as) (b:bs) = do match' a b
                             match' as bs
+  match' []     []     = return ()
   match' _      _      = raise MatchingFailed
+
+instance (Unify a, Unify b) => Unify (a,b) where
+  mgu' (a,b) (c,d) = do mgu' a c
+                        mgu' b d
+
+  match' (a,b) (c,d) = do match' a c
+                          match' b d
 
 instance Unify Pred where
   mgu' (Pred n1 p1 args1) (Pred n2 p2 args2)
@@ -129,7 +144,7 @@ instance Unify Pred where
     | otherwise =
       raise UnificationFailed
 
-  match' (Pred n1 p1 args1) (Pred n2 p2 args2)
+  match' a@(Pred n1 p1 args1) b@(Pred n2 p2 args2)
     | n1 == n2 && p1 == p2 =
       match' args1 args2
 
@@ -172,7 +187,7 @@ instance Unify Term where
   match' (TVar v1) b =
     do mb <- bindVar v1 b
        case mb of
-         Just a  -> mgu' a b
+         Just a  -> match' a b
          Nothing -> return ()
 
-  match' _ _ = raise UnificationFailed
+  match' _ _ = raise MatchingFailed
