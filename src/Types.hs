@@ -13,6 +13,9 @@ import qualified Data.Set as Set
 data Pred = Pred Bool String [Term]
             deriving (Eq,Show,Ord)
 
+predName :: Pred -> String
+predName (Pred _ n _) = n
+
 data Term = TVar Var
           | TGen Var
           | TCon String
@@ -93,7 +96,7 @@ data Step = Step { sName     :: String
                  } deriving (Show)
 
 -- | Causal links: between steps a and b, condition c is protected.
-data CausalLink = Link Action Term Action
+data CausalLink = Link Action Pred Action
                   deriving (Show,Eq,Ord)
 
 type Assumps = [Pred]
@@ -103,4 +106,21 @@ type Goals = [Pred]
 data Action = Start
             | Inst Int String [Term]
             | Finish
-              deriving (Show,Eq,Ord)
+              deriving (Show)
+
+instance Eq Action where
+  Start      == Start      = True
+  Inst a _ _ == Inst b _ _ = a == b
+  Finish     == Finish     = True
+  _          == _          = False
+
+instance Ord Action where
+  compare Inst{}       Start        = GT
+  compare (Inst a _ _) (Inst b _ _) = compare a b
+  compare Inst{}       Finish       = LT
+
+  compare Start        Start        = EQ
+  compare Start        _            = LT
+
+  compare Finish       Finish       = EQ
+  compare Finish       _            = GT

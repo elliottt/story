@@ -8,8 +8,10 @@ import           Types
 import qualified Unify
 
 import           Control.Applicative
+import           Data.List ( sortBy )
 import qualified Data.Map as Map
-import           Data.Monoid ( mempty )
+import           Data.Maybe ( fromMaybe )
+import           Data.Monoid ( mappend )
 import qualified Data.Set as Set
 import           MonadLib
 
@@ -19,7 +21,10 @@ import Debug.Trace
 type Plan = [Action]
 
 pop :: Domain -> Assumps -> Goals -> Maybe Plan
-pop d as gs = runPlanM d as (solveGoals (map (Goal Finish) gs))
+pop d as gs = runPlanM d as $
+  do solveGoals (map (Goal Finish) gs)
+     rw <- PlanM get
+     zonk (orderedActions rw)
 
 
 -- Planning Monad --------------------------------------------------------------
@@ -31,36 +36,49 @@ newtype PlanM a = PlanM { unPlanM :: StateT RW (ChoiceT Id) a
 data RW = RW { rwFresh     :: Int
              , rwEnv       :: Unify.Env
              , rwDomain    :: Domain
+             , rwAssumps   :: Map.Map String [Assump]
              , rwActions   :: Set.Set Action
              , rwLinks     :: Set.Set CausalLink
-             , rwOrderings :: Map.Map Action [Action]
-             }
+             , rwOrderings :: Map.Map Action (Set.Set Action)
+             } deriving (Show)
 
 orderedActions :: RW -> [Action]
-orderedActions RW { .. } = go Start
+orderedActions RW { .. } = sortBy orderings (Set.toList rwActions)
   where
-  go Finish = []
-  go i = case Map.lookup i rwOrderings of
-           Just is -> i : is ++ concatMap go is
+  orderings a b = fromMaybe EQ $
+    msum [ do xs <- Map.lookup a rwOrderings
+              guard (Set.member b xs)
+              return LT
+         , do xs <- Map.lookup b rwOrderings
+              guard (Set.member a xs)
+              return GT
+         ]
 
-           -- this shouldn't happen
-           Nothing -> []
+data Assump = Assump { aFrom :: Action
+                     , aPred :: Pred
+                     } deriving (Show,Eq,Ord)
 
-
-data Goal = Goal { gAction :: Action
-                 , gPred   :: Pred
+data Goal = Goal { gFrom :: Action
+                 , gPred :: Pred
                  } deriving (Show,Eq,Ord)
 
 runPlanM :: Domain -> Assumps -> PlanM a -> Maybe a
-runPlanM d as m = fmap fst (runId (findOne (runStateT rw (unPlanM m))))
+runPlanM d as m =
+  case runId (findOne (runStateT rw (unPlanM m))) of
+    Just (a,_) -> Just a
+    Nothing    -> Nothing
   where
   rw = RW { rwFresh     = 0
           , rwEnv       = Map.empty
           , rwDomain    = d
+          , rwAssumps   = baseAssumps
           , rwActions   = Set.fromList [Start,Finish]
           , rwLinks     = Set.empty
-          , rwOrderings = Map.singleton Start [Finish]
+          , rwOrderings = Map.singleton Start (Set.singleton Finish)
           }
+
+  baseAssumps =
+    Map.fromListWith (++) [ (n,[Assump Start p]) | p@(Pred _ n _) <- as ]
 
 getEnv :: PlanM Unify.Env
 getEnv  = PlanM (rwEnv `fmap` get)
@@ -69,6 +87,22 @@ instId :: PlanM Int
 instId  = PlanM $ do rw <- get
                      set rw { rwFresh = rwFresh rw + 1 }
                      return (rwFresh rw)
+
+before :: Action -> Action -> PlanM ()
+before a b = PlanM $
+  do rw @ RW { .. } <- get
+     set rw
+       { rwOrderings = Map.insertWith mappend a (Set.singleton b) rwOrderings }
+
+-- | Insert a causal link between the action and the goal that it addresses.
+link :: Action -> Goal -> PlanM ()
+link act Goal { .. } = PlanM $
+  do rw @ RW { .. } <- get
+     set rw { rwLinks = Set.insert (Link act gPred gFrom) rwLinks }
+
+assumpsFor :: String -> PlanM [Assump]
+assumpsFor n = PlanM $ do RW { .. } <- get
+                          return (Map.findWithDefault [] n rwAssumps)
 
 fresh :: Var -> PlanM Term
 fresh v = PlanM $ do rw <- get
@@ -123,34 +157,61 @@ achieves op p =
 
 -- Planner ---------------------------------------------------------------------
 
-solveGoals :: [Goal] -> PlanM [Action]
+solveGoals :: [Goal] -> PlanM ()
 
 solveGoals (g:gs) =
   do gs' <- solveGoal g
      solveGoals (gs ++ gs')
 
 solveGoals [] =
-  do rw <- PlanM get
-     return (orderedActions rw)
+     return ()
 
-
--- | Solve a goal, returning any generated goals.
 solveGoal :: Goal -> PlanM [Goal]
-solveGoal g =
-  do (ps,op) <- findAction g
-     i       <- instId
-     let mkGoal = Goal (Inst i (oName op) ps)
-     return (map mkGoal (oPrecond op))
+solveGoal g @ Goal { .. } =
+  do (act,gs) <- msum [ do a <- byAssumption g
+                           return (a,[])
+                      , byNewAction g ]
+     act `before` gFrom
+     act `link` g
+
+     return gs
+
+-- | Solve a goal by a result that already exists in the plan.
+byAssumption :: Goal -> PlanM Action
+byAssumption Goal { .. } =
+  do as <- assumpsFor (predName gPred)
+     msum [ match gPred aPred >> return aFrom | Assump { .. } <- as ]
+
+-- | Solve a goal, by generating a new action, and returning the additional
+-- goals it generated.
+byNewAction :: Goal -> PlanM (Action,[Goal])
+byNewAction g =
+  do (ps,Operator { .. }) <- findAction g
+     i                    <- instId
+     let act    = Inst i oName ps
+     Start `before` act
+     PlanM $ do rw <- get
+                set rw { rwActions = Set.insert act (rwActions rw) }
+     return (act, [ Goal act p | p <- oPrecond ])
 
 
 -- Testing ---------------------------------------------------------------------
 
-move = forall ["who", "a", "b"] $ \ [who,a,b] -> Operator
+move :: Schema Operator
+move  = forall ["who", "a", "b"] $ \ [who,a,b] -> Operator
   { oName     = "move"
-  , oPrecond  = [ Pred True "At" [who,a] ]
+  , oPrecond  = [ Pred True "At" [who,a], Pred True "Path" [a,b] ]
   , oPostcond = [ Pred True  "At" [who,b]
                 , Pred False "At" [who,a] ]
   }
 
-test = pop [move] [Pred True "At" ["me", "home"]]
-                  [Pred True "At" ["me", "work"]]
+test :: Maybe Plan
+test  = pop [move] [ Pred True "At"   ["me",  "home"]
+
+                   , Pred True "Path" ["home","park"]
+                   , Pred True "Path" ["park","home"]
+
+                   , Pred True "Path" ["work", "park"]
+                   , Pred True "Path" ["park", "work"] ]
+
+                   [Pred True "At" ["me", "work"]]

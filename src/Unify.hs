@@ -97,6 +97,11 @@ instance (Zonk a, Zonk b) => Zonk (a,b) where
                    b' <- zonk' b
                    return (a',b')
 
+instance Zonk Action where
+  zonk' Start         = return Start
+  zonk' (Inst i p ts) = Inst i p `fmap` zonk' ts
+  zonk' Finish        = return Finish
+
 instance Zonk Operator where
   zonk' (Operator n ps qs) =
     do oPrecond  <- zonk' ps
