@@ -48,9 +48,7 @@ orderedActions :: RW -> [Action]
 orderedActions RW { .. } = [ act | vert <- topSort graph
                                  , let (act,_,_) = fromVertex vert ]
   where
-  (graph, fromVertex, getVert) = graphFromEdges edges
-
-  actionToVert act = maybe [] return (getVert act)
+  (graph, fromVertex, _) = graphFromEdges edges
 
   edges = [ (act, act, Set.toList as)
           | act <- Set.toList rwActions
