@@ -8,7 +8,9 @@ import           Types
 import qualified Unify
 
 import           Control.Applicative
+import           Data.Foldable ( foldMap )
 import           Data.List ( sortBy )
+import           Data.Graph
 import qualified Data.Map as Map
 import           Data.Maybe ( fromMaybe )
 import           Data.Monoid ( mappend )
@@ -43,16 +45,16 @@ data RW = RW { rwFresh     :: Int
              } deriving (Show)
 
 orderedActions :: RW -> [Action]
-orderedActions RW { .. } = sortBy orderings (Set.toList rwActions)
+orderedActions RW { .. } = [ act | vert <- topSort graph
+                                 , let (act,_,_) = fromVertex vert ]
   where
-  orderings a b = fromMaybe EQ $
-    msum [ do xs <- Map.lookup a rwOrderings
-              guard (Set.member b xs)
-              return LT
-         , do xs <- Map.lookup b rwOrderings
-              guard (Set.member a xs)
-              return GT
-         ]
+  (graph, fromVertex, getVert) = graphFromEdges edges
+
+  actionToVert act = maybe [] return (getVert act)
+
+  edges = [ (act, act, Set.toList as)
+          | act <- Set.toList rwActions
+          , let as = Map.findWithDefault Set.empty act rwOrderings ]
 
 data Assump = Assump { aFrom :: Action
                      , aPred :: Pred
@@ -88,6 +90,10 @@ instId  = PlanM $ do rw <- get
                      set rw { rwFresh = rwFresh rw + 1 }
                      return (rwFresh rw)
 
+addAction :: Action -> PlanM ()
+addAction act = PlanM $ do rw <- get
+                           set rw { rwActions = Set.insert act (rwActions rw) }
+
 before :: Action -> Action -> PlanM ()
 before a b = PlanM $
   do rw @ RW { .. } <- get
@@ -122,7 +128,7 @@ match l r = PlanM $
   do rw <- get
      case Unify.match (rwEnv rw) l r of
        Right env' -> set rw { rwEnv = env' }
-       Left err   -> traceShow err mzero
+       Left err   -> mzero
 
 unify :: Unify.Unify tm => tm -> tm -> PlanM ()
 unify l r = PlanM $
@@ -185,33 +191,43 @@ byAssumption Goal { .. } =
 -- | Solve a goal, by generating a new action, and returning the additional
 -- goals it generated.
 byNewAction :: Goal -> PlanM (Action,[Goal])
-byNewAction g =
+byNewAction g @ Goal { .. } =
   do (ps,Operator { .. }) <- findAction g
      i                    <- instId
-     let act    = Inst i oName ps
+     let act = Inst i oName ps
+     addAction act
      Start `before` act
-     PlanM $ do rw <- get
-                set rw { rwActions = Set.insert act (rwActions rw) }
+     act   `before` Finish
      return (act, [ Goal act p | p <- oPrecond ])
 
 
 -- Testing ---------------------------------------------------------------------
 
-move :: Schema Operator
-move  = forall ["who", "a", "b"] $ \ [who,a,b] -> Operator
-  { oName     = "move"
-  , oPrecond  = [ Pred True "At" [who,a], Pred True "Path" [a,b] ]
-  , oPostcond = [ Pred True  "At" [who,b]
-                , Pred False "At" [who,a] ]
-  }
+buy :: Schema Operator
+buy  = forall ["x", "store"] $ \ [x,store] ->
+  Operator { oName     = "Buy"
+           , oPrecond  = [ Pred True "At" [store], Pred True "Sells" [store,x] ]
+           , oPostcond = [ Pred True "Have" [x] ]
+           }
 
-test :: Maybe Plan
-test  = pop [move] [ Pred True "At"   ["me",  "home"]
+go :: Schema Operator
+go  = forall ["x", "y"] $ \ [x,y] ->
+  Operator { oName     = "Go"
+           , oPrecond  = [ Pred True "At" [x] ]
+           , oPostcond = [ Pred True "At" [y], Pred False "At" [x] ]
+           }
 
-                   , Pred True "Path" ["home","park"]
-                   , Pred True "Path" ["park","home"]
+testDomain = [buy,go]
 
-                   , Pred True "Path" ["work", "park"]
-                   , Pred True "Path" ["park", "work"] ]
+testAssumps = [ Pred True "At" ["Home"]
+              , Pred True "Sells" ["SM","Milk"]
+              , Pred True "Sells" ["SM","Banana"]
+              , Pred True "Sells" ["HW","Drill"]
+              ]
 
-                   [Pred True "At" ["me", "work"]]
+testGoals = [ Pred True "Have" ["Milk"]
+            , Pred True "Have" ["Banana"]
+            , Pred True "Have" ["Drill"]
+            ]
+
+test = pop testDomain testAssumps testGoals

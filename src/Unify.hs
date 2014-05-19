@@ -17,8 +17,6 @@ import qualified Data.Set as Set
 import           Data.Traversable ( traverse )
 import           MonadLib
 
-import Debug.Trace
-
 
 -- External Interface ----------------------------------------------------------
 
