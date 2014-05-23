@@ -41,8 +41,8 @@ match env a a' = case runUnifyM env (match' a a') of
 -- | Remove variables from term.
 zonk :: Zonk a => Env -> a -> Either Error a
 zonk env a = case runUnifyM env (zonk' a) of
-               Right (a,_) -> Right a
-               Left err    -> Left err
+               Right (a',_) -> Right a'
+               Left err     -> Left err
 
 -- Unification Monad -----------------------------------------------------------
 
@@ -68,20 +68,6 @@ bindVar :: Var -> Term -> UnifyM ()
 bindVar i tm = UnifyM $
   do rw <- get
      set rw { rwEnv = Map.insert i tm (rwEnv rw) }
-
-seenVar :: Var -> UnifyM ()
-seenVar v = UnifyM $ do rw <- get
-                        set rw { rwSeen = Set.insert v (rwSeen rw) }
-
--- | Replace a variable with its binding.
-zonkVar :: Var -> UnifyM Term
-zonkVar v =
-  do RW { .. } <- UnifyM get
-     case Map.lookup v rwEnv of
-       Just tm' | Set.member v rwSeen -> raise (OccursCheckFailed (TVar v) tm')
-                | otherwise           -> do seenVar v
-                                            zonk' tm'
-       Nothing                        -> return (TVar v)
 
 
 -- Primitive Unification -------------------------------------------------------
@@ -158,7 +144,7 @@ instance Unify Pred where
     | otherwise =
       raise UnificationFailed
 
-  match' a@(Pred n1 p1 args1) b@(Pred n2 p2 args2)
+  match' (Pred n1 p1 args1) (Pred n2 p2 args2)
     | n1 == n2 && p1 == p2 =
       match' args1 args2
 

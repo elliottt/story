@@ -8,9 +8,7 @@ import Pretty
 
 import           Control.Monad ( guard )
 import           Data.Function ( on )
-import qualified Data.Map as Map
 import           Data.String ( IsString(..) )
-import qualified Data.Set as Set
 
 
 data Pred = Pred Bool String [Term]
