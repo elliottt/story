@@ -5,8 +5,8 @@
 module Unify (
     Env
   , Error
-  , Zonk(), zonk
-  , Unify(), mgu, match
+  , Zonk(..), zonk
+  , Unify(..), mgu, match
   ) where
 
 import Types
@@ -59,13 +59,15 @@ instance ExceptionM UnifyM Error where
 runUnifyM :: Env -> UnifyM a -> Either Error (a,RW)
 runUnifyM env m = runM (unUnifyM m) RW { rwSeen = Set.empty, rwEnv = env }
 
-bindVar :: Var -> Term -> UnifyM (Maybe Term)
+lookupVar :: Var -> UnifyM (Maybe Term)
+lookupVar i = UnifyM $
+  do rw <- get
+     return (Map.lookup i (rwEnv rw))
+
+bindVar :: Var -> Term -> UnifyM ()
 bindVar i tm = UnifyM $
   do rw <- get
-     case Map.lookup i (rwEnv rw) of
-       Just tm' -> return (Just tm')
-       Nothing  -> do set rw { rwEnv = Map.insert i tm (rwEnv rw) }
-                      return Nothing
+     set rw { rwEnv = Map.insert i tm (rwEnv rw) }
 
 seenVar :: Var -> UnifyM ()
 seenVar v = UnifyM $ do rw <- get
@@ -89,6 +91,10 @@ class Zonk a where
 
 instance Zonk a => Zonk [a] where
   zonk' = traverse zonk'
+
+instance (Ord a, Zonk a) => Zonk (Set.Set a) where
+  zonk' as = do as' <- traverse zonk' (Set.toList as)
+                return (Set.fromList as')
 
 instance (Zonk a, Zonk b) => Zonk (a,b) where
   zonk' (a,b) = do a' <- zonk' a
@@ -116,6 +122,11 @@ instance Zonk Term where
                    Just tm' -> zonk' tm'
                    Nothing  -> return tm
     _      -> return tm
+
+instance Zonk CausalLink where
+  zonk' (Link l p r) = Link <$> zonk' l
+                            <*> zonk' p
+                            <*> zonk' r
 
 
 class Zonk a => Unify a where
@@ -164,16 +175,16 @@ instance Unify Term where
   mgu' (TVar v1) (TVar v2) | v1 == v2 = return ()
 
   mgu' (TVar v1) b =
-    do mb <- bindVar v1 b
+    do mb <- lookupVar v1
        case mb of
          Just a  -> mgu' a b
-         Nothing -> return ()
+         Nothing -> bindVar v1 b
 
   mgu' a (TVar v2) =
-    do mb <- bindVar v2 a
+    do mb <- lookupVar v2
        case mb of
          Just b  -> mgu' a b
-         Nothing -> return ()
+         Nothing -> bindVar v2 a
 
   mgu' _ _ = raise UnificationFailed
 
@@ -188,9 +199,15 @@ instance Unify Term where
 
   -- matching only allows variables to be instantiated on the LHS
   match' (TVar v1) b =
-    do mb <- bindVar v1 b
+    do mb <- lookupVar v1
        case mb of
          Just a  -> match' a b
-         Nothing -> return ()
+         Nothing -> bindVar v1 b
+
+  match' a (TVar v2) =
+    do mb <- lookupVar v2
+       case mb of
+         Just b  -> match' a b
+         Nothing -> raise MatchingFailed
 
   match' _ _ = raise MatchingFailed
