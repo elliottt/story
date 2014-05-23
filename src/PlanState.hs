@@ -1,6 +1,24 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module PlanState where
+module PlanState (
+    -- * Partial Plans
+    Plan()
+  , initialPlan
+  , orderedActions
+  , getBindings
+  , setBindings
+
+    -- ** Ordering Constraints
+  , before
+  , between
+  , ordsConsistent
+
+    -- ** Causal Links
+  , addLink
+
+    -- * Goals
+  , Goal(..)
+  ) where
 
 import Unify ( Env )
 import Types
@@ -16,9 +34,9 @@ import qualified Data.Tree as Tree
 
 -- Types -----------------------------------------------------------------------
 
-data PlanState = PlanState { psBindings :: Env
-                           , psNodes    :: Map.Map Action Node
-                           } deriving (Show)
+data Plan = Plan { pBindings :: Env
+                 , pNodes    :: Map.Map Action Node
+                 } deriving (Show)
 
 data Node = Node { nodeInst     :: Operator
                    -- ^ The instantiated operator
@@ -38,12 +56,12 @@ data Goal = Goal { gSource :: Action
 -- PlanState Operations --------------------------------------------------------
 
 -- | Form a plan state from an initial set of assumptions, and goals.
-initialPlanState :: Assumps -> Goals -> (PlanState,[Goal])
-initialPlanState as gs = ((Start `before` Finish) psFinish, goals)
+initialPlan :: Assumps -> Goals -> (Plan,[Goal])
+initialPlan as gs = ((Start `before` Finish) psFinish, goals)
   where
-  emptyPlan        = PlanState { psBindings = Map.empty
-                               , psNodes    = Map.empty
-                               }
+  emptyPlan        = Plan { pBindings = Map.empty
+                          , pNodes    = Map.empty
+                          }
 
   (psStart,_)      = addAction Start  Operator { oName     = "<Start>"
                                                , oPrecond  = []
@@ -52,36 +70,42 @@ initialPlanState as gs = ((Start `before` Finish) psFinish, goals)
   (psFinish,goals) = addAction Finish Operator { oName     = "<Finish>"
                                                , oPrecond  = gs
                                                , oPostcond = [] } psStart
+-- | Retrieve variable bindings from the plan.
+getBindings :: Plan -> Env
+getBindings  = pBindings
+
+-- | Set variable bindings in the plan.
+setBindings :: Env -> Plan -> Plan
+setBindings env p = p { pBindings = env }
 
 -- | Modify an existing action.
-modifyAction :: Action -> (Node -> Node) -> (PlanState -> PlanState)
-modifyAction act f ps = ps { psNodes = Map.adjust f act (psNodes ps) }
+modifyAction :: Action -> (Node -> Node) -> (Plan -> Plan)
+modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 
 -- | Add an action, with its instantiation, to the plan state.  All
 -- preconditions of the goal will be considered goals, and appended to the
 -- agenda.
-addAction :: Action -> Operator -> PlanState -> (PlanState,[Goal])
-addAction act oper ps = (ps',newGoals)
+addAction :: Action -> Operator -> Plan -> (Plan,[Goal])
+addAction act oper p = (p',newGoals)
   where
-  ps' = ps { psNodes = Map.insert act Node { nodeInst     = oper
-                                           , nodeBefore   = Set.empty
-                                           , nodeAfter    = Set.empty
-                                           , nodeProtects = Set.empty
-                                           } (psNodes ps)
-           }
-  newGoals = [ Goal act p | p <- oPrecond oper ]
+  p' = p { pNodes = Map.insert act Node { nodeInst     = oper
+                                        , nodeBefore   = Set.empty
+                                        , nodeAfter    = Set.empty
+                                        , nodeProtects = Set.empty
+                                        } (pNodes p) }
+  newGoals = [ Goal act tm | tm <- oPrecond oper ]
 
 -- | Record that action a comes before action b, in the plan state.
-before :: Action -> Action -> PlanState -> PlanState
+before :: Action -> Action -> Plan -> Plan
 a `before` b = modifyAction b (addBefore a)
              . modifyAction a (addAfter  b)
 
-addLink :: Action -> Pred -> Action -> PlanState -> PlanState
+addLink :: Action -> Pred -> Action -> Plan -> Plan
 addLink l p r = modifyAction l $ \ node ->
   node { nodeProtects = Set.insert (p,r) (nodeProtects node) }
 
 -- | All actions that occur on the given interval.
-between :: Action -> Action -> PlanState -> [(Action,Node)]
+between :: Action -> Action -> Plan -> [(Action,Node)]
 between l r ps = [ fromVertex v | v <- fromR, v `IntSet.member` pre ]
   where
 
@@ -100,33 +124,33 @@ between l r ps = [ fromVertex v | v <- fromR, v `IntSet.member` pre ]
   pre = IntSet.fromList fromL IntSet.\\ IntSet.fromList [lv,rv]
 
 -- | Check that there are no cycles in the graph.
-ordsConsistent :: PlanState -> Bool
+ordsConsistent :: Plan -> Bool
 ordsConsistent ps = all isAcyclic (scc ps)
   where
   isAcyclic Graph.AcyclicSCC{} = True
   isAcyclic _                  = False
 
-scc :: PlanState -> [Graph.SCC (Action,Node)]
-scc PlanState { .. } = SCC.stronglyConnComp
-  [ ((key,node), key, es) | (key,node) <- Map.toList psNodes
+scc :: Plan -> [Graph.SCC (Action,Node)]
+scc Plan { .. } = SCC.stronglyConnComp
+  [ ((key,node), key, es) | (key,node) <- Map.toList pNodes
                           , let es = Set.toList (nodeAfter node) ]
 
 -- | Turn the plan state into a graph, and create a function for recovering
 -- information about the actions in the plan.
-actionGraph :: PlanState -> ( Graph.Graph
-                            , Graph.Vertex -> (Action,Node)
-                            , Action -> Maybe Graph.Vertex )
-actionGraph PlanState { .. } = (graph, getAction, toVertex)
+actionGraph :: Plan -> ( Graph.Graph
+                       , Graph.Vertex -> (Action,Node)
+                       , Action -> Maybe Graph.Vertex )
+actionGraph Plan { .. } = (graph, getAction, toVertex)
   where
   (graph, fromVertex, toVertex) = Graph.graphFromEdges
-    [ ((key,node), key, es) | (key,node) <- Map.toList psNodes
+    [ ((key,node), key, es) | (key,node) <- Map.toList pNodes
                             , let es = Set.toList (nodeAfter node) ]
 
   getAction v = case fromVertex v of
                   (x,_,_) -> x
 
 -- | Produce a linear plan from a plan state.
-orderedActions :: PlanState -> [Action]
+orderedActions :: Plan -> [Action]
 orderedActions ps = [ act | vert <- Graph.topSort graph
                           , let (act,_) = fromVertex vert ]
   where
