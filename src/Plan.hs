@@ -11,7 +11,6 @@ import qualified Unify
 
 import           Control.Applicative
 import           Data.Foldable ( forM_ )
-import           Data.List ( partition )
 import qualified Data.Set as Set
 import           MonadLib hiding ( forM_ )
 
@@ -131,13 +130,6 @@ zonkDbg :: (PP a, Unify.Zonk a) => String -> a -> PlanM ()
 zonkDbg l a = do a' <- zonk a
                  traceM (show (hang (text l <> char ':') 2 (pp a')))
 
-dumpActions =
-  do acts <- fromPlan getActions
-     forM_ acts $ \ (a,b) -> zonkDbg "action" (a,after b)
-
-     sccs <- fromPlan scc
-     mapM_ (zonkDbg "scc" . fmap fst) sccs
-
 
 -- Planner ---------------------------------------------------------------------
 
@@ -145,7 +137,7 @@ dumpActions =
 solveGoals :: [Goal] -> PlanM ()
 
 solveGoals (g:gs) =
-  do (act,newGoals) <- solveGoal g
+  do newGoals <- solveGoal g
 
      resolveThreats
 
@@ -156,15 +148,17 @@ solveGoals (g:gs) =
 solveGoals [] =
      return ()
 
+solveGoal :: Goal -> PlanM [Goal]
 solveGoal g =
   do (s_add,gs) <- msum [ byAssumption g, byNewStep g ]
 
      updatePlan_ ( (s_add `isBefore` gSource g)
                  . addLink (Link s_add (gPred g) (gSource g)) )
 
-     return (s_add,gs)
+     return gs
 
 
+byAssumption :: Goal -> PlanM (Action,[Goal])
 byAssumption Goal { .. } =
   do candidates <- fromPlan getActions
      msum (map tryAssump candidates)
@@ -174,6 +168,7 @@ byAssumption Goal { .. } =
        return (act, [])
 
 
+byNewStep :: Goal -> PlanM (Action,[Goal])
 byNewStep Goal { .. } =
   do dom <- getDomain
      msum (map tryInst dom)
@@ -188,7 +183,8 @@ byNewStep Goal { .. } =
        return (act,gs)
 
 
-resolveThreats =
+resolveThreats :: PlanM ()
+resolveThreats  =
   do as    <- fromPlan getActions
      links <- fromPlan getLinks
      bs    <- getBinds
