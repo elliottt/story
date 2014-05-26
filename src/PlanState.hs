@@ -4,30 +4,46 @@ module PlanState (
     -- * Partial Plans
     Plan()
   , initialPlan
-  , orderedActions
+  , addAction
+  , zonkPlan
+  , drawPlan
+  , getActions
+  , planConsistent
+
+    -- ** Variable Bindings
   , getBindings
   , setBindings
 
     -- ** Ordering Constraints
-  , before
-  , between
+  , isBefore
   , ordsConsistent
+  , orderedActions
+  , scc
 
     -- ** Causal Links
   , addLink
+  , getLinks
+
+    -- ** Graph Nodes
+  , Node()
+  , after
+  , effects
 
     -- * Goals
   , Goal(..)
   ) where
 
-import Unify ( Env )
+import FloydWarshall ( transitiveClosure )
+import Pretty
+import Unify ( Error, Env, Zonk(..), zonk )
 import Types
 
+import           Control.Applicative ( (<$>), (<*>) )
+import           Data.Array.IArray ( (!) )
 import qualified Data.Graph as Graph
 import qualified Data.Graph.SCC as SCC
-import qualified Data.IntSet as IntSet
+import           Data.List ( sortBy )
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( fromMaybe, fromJust )
 import qualified Data.Set as Set
 import qualified Data.Tree as Tree
 
@@ -35,7 +51,11 @@ import qualified Data.Tree as Tree
 -- Types -----------------------------------------------------------------------
 
 data Plan = Plan { pBindings :: Env
+                   -- ^ Current set of variable bindings
                  , pNodes    :: Map.Map Action Node
+                   -- ^ Instantiated actions, and their dependencies
+                 , pLinks    :: Set.Set Link
+                   -- ^ Causal links
                  } deriving (Show)
 
 data Node = Node { nodeInst     :: Operator
@@ -44,23 +64,37 @@ data Node = Node { nodeInst     :: Operator
                    -- ^ Nodes that come before this one in the graph
                  , nodeAfter    :: Set.Set Action
                    -- ^ Nodes that come after this one in the graph
-                 , nodeProtects :: Set.Set (Pred,Action)
-                   -- ^ Causal links between this node and others
                  } deriving (Show)
 
-data Goal = Goal { gSource :: Action
-                 , gPred   :: Pred
+data Goal = Goal { gSource  :: Action
+                 , gPred    :: Pred
+                 , gEffects :: [Pred]
                  } deriving (Show)
 
 
 -- PlanState Operations --------------------------------------------------------
 
+drawPlan :: Plan -> String
+drawPlan p = Tree.drawForest (map (fmap drawNode) (Graph.dff graph))
+  where
+  (graph, fromVertex, _) = actionGraph p nodeAfter
+  drawNode v             = show (pp (fst (fromVertex v)))
+
+zonkPlan :: Plan -> Either Error Plan
+zonkPlan plan = case zonk (pBindings plan) (pNodes plan) of
+  Right nodes' -> Right plan { pNodes = nodes' }
+  Left err     -> Left err
+
+planConsistent :: Plan -> Bool
+planConsistent  = ordsConsistent
+
 -- | Form a plan state from an initial set of assumptions, and goals.
 initialPlan :: Assumps -> Goals -> (Plan,[Goal])
-initialPlan as gs = ((Start `before` Finish) psFinish, goals)
+initialPlan as gs = ((Start `isBefore` Finish) psFinish, goals)
   where
   emptyPlan        = Plan { pBindings = Map.empty
                           , pNodes    = Map.empty
+                          , pLinks    = Set.empty
                           }
 
   (psStart,_)      = addAction Start  Operator { oName     = "<Start>"
@@ -78,6 +112,10 @@ getBindings  = pBindings
 setBindings :: Env -> Plan -> Plan
 setBindings env p = p { pBindings = env }
 
+
+getActions :: Plan -> [(Action,Node)]
+getActions Plan { .. } = Map.toList pNodes
+
 -- | Modify an existing action.
 modifyAction :: Action -> (Node -> Node) -> (Plan -> Plan)
 modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
@@ -91,37 +129,19 @@ addAction act oper p = (p',newGoals)
   p' = p { pNodes = Map.insert act Node { nodeInst     = oper
                                         , nodeBefore   = Set.empty
                                         , nodeAfter    = Set.empty
-                                        , nodeProtects = Set.empty
                                         } (pNodes p) }
-  newGoals = [ Goal act tm | tm <- oPrecond oper ]
+  newGoals = [ Goal act tm (oPostcond oper) | tm <- oPrecond oper ]
 
 -- | Record that action a comes before action b, in the plan state.
-before :: Action -> Action -> Plan -> Plan
-a `before` b = modifyAction b (addBefore a)
-             . modifyAction a (addAfter  b)
+isBefore :: Action -> Action -> Plan -> Plan
+a `isBefore` b = modifyAction b (addBefore a)
+               . modifyAction a (addAfter  b)
 
-addLink :: Action -> Pred -> Action -> Plan -> Plan
-addLink l p r = modifyAction l $ \ node ->
-  node { nodeProtects = Set.insert (p,r) (nodeProtects node) }
+addLink :: Link -> Plan -> Plan
+addLink l p = p { pLinks = Set.insert l (pLinks p) }
 
--- | All actions that occur on the given interval.
-between :: Action -> Action -> Plan -> [(Action,Node)]
-between l r ps = [ fromVertex v | v <- fromR, v `IntSet.member` pre ]
-  where
-
-  -- build the forward and backward views of the graph
-  (graph, fromVertex, toVertex) = actionGraph ps
-  backwards                     = Graph.transposeG graph
-
-  -- default the bounds to Start/Finish respectively
-  lv = fromMaybe (fromJust (toVertex Start))  (toVertex l)
-  rv = fromMaybe (fromJust (toVertex Finish)) (toVertex r)
-
-  -- reachable nodes from the left/right bounds
-  fromL = concatMap Tree.flatten (Graph.dfs graph     [lv])
-  fromR = concatMap Tree.flatten (Graph.dfs backwards [rv])
-
-  pre = IntSet.fromList fromL IntSet.\\ IntSet.fromList [lv,rv]
+getLinks :: Plan -> Set.Set Link
+getLinks  = pLinks
 
 -- | Check that there are no cycles in the graph.
 ordsConsistent :: Plan -> Bool
@@ -137,24 +157,33 @@ scc Plan { .. } = SCC.stronglyConnComp
 
 -- | Turn the plan state into a graph, and create a function for recovering
 -- information about the actions in the plan.
-actionGraph :: Plan -> ( Graph.Graph
-                       , Graph.Vertex -> (Action,Node)
-                       , Action -> Maybe Graph.Vertex )
-actionGraph Plan { .. } = (graph, getAction, toVertex)
+actionGraph :: Plan
+            -> (Node -> Set.Set Action)
+            -> ( Graph.Graph
+               , Graph.Vertex -> (Action,Node)
+               , Action -> Maybe Graph.Vertex )
+actionGraph Plan { .. } prj = (graph, getAction, toVertex)
   where
   (graph, fromVertex, toVertex) = Graph.graphFromEdges
     [ ((key,node), key, es) | (key,node) <- Map.toList pNodes
-                            , let es = Set.toList (nodeAfter node) ]
+                            , let es = Set.toList (prj node) ]
 
   getAction v = case fromVertex v of
                   (x,_,_) -> x
 
 -- | Produce a linear plan from a plan state.
 orderedActions :: Plan -> [Action]
-orderedActions ps = [ act | vert <- Graph.topSort graph
+orderedActions ps = [ act | vert <- sorted
                           , let (act,_) = fromVertex vert ]
   where
-  (graph,fromVertex,_) = actionGraph ps
+  (graph,fromVertex,_) = actionGraph ps nodeAfter
+
+  relation                      = transitiveClosure graph
+  ordRel a b | a == b           = EQ
+             | relation ! (a,b) = LT
+             | otherwise        = GT
+
+  sorted               = sortBy ordRel (Graph.vertices graph)
 
 
 -- Node Operations -------------------------------------------------------------
@@ -164,3 +193,25 @@ addAfter act node = node { nodeAfter = Set.insert act (nodeAfter node) }
 
 addBefore :: Action -> Node -> Node
 addBefore act node = node { nodeBefore = Set.insert act (nodeBefore node) }
+
+effects :: Node -> [Pred]
+effects Node { .. } = oPostcond nodeInst
+
+after :: Node -> [Action]
+after Node { .. } = Set.toList nodeAfter
+
+
+-- Utility Instances -----------------------------------------------------------
+
+instance Zonk Node where
+  zonk' Node { .. } = Node <$> zonk' nodeInst
+                           <*> zonk' nodeBefore
+                           <*> zonk' nodeAfter
+
+instance Zonk Goal where
+  zonk' Goal { .. } = Goal <$> zonk' gSource
+                           <*> zonk' gPred
+                           <*> zonk' gEffects
+
+instance PP Goal where
+  pp Goal { .. } = pp gPred <+> text "from" <+> pp gSource

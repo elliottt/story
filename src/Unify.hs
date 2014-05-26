@@ -9,10 +9,12 @@ module Unify (
   , Unify(..), mgu, match
   ) where
 
+import Pretty
 import Types
 
 import           Control.Applicative
-import qualified Data.Map as Map
+import           Data.Graph ( SCC(..) )
+import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import           Data.Traversable ( traverse )
 import           MonadLib
@@ -28,11 +30,15 @@ data Error = UnificationFailed
            | OccursCheckFailed Term Term
              deriving (Show)
 
+instance PP Error where
+  pp e = text (show e)
+
 mgu :: Unify a => Env -> a -> a -> Either Error Env
 mgu env a a' = case runUnifyM env (mgu' a a') of
                  Right (_,RW { .. }) -> Right rwEnv
                  Left err            -> Left err
 
+-- | Matching unification, allowing variables on the left to bind.
 match :: Unify a => Env -> a -> a -> Either Error Env
 match env a a' = case runUnifyM env (match' a a') of
                    Right (_,RW { .. }) -> Right rwEnv
@@ -75,6 +81,10 @@ bindVar i tm = UnifyM $
 class Zonk a where
   zonk'  :: a -> UnifyM a
 
+instance Zonk a => Zonk (SCC a) where
+  zonk' (AcyclicSCC a) = AcyclicSCC `fmap` zonk' a
+  zonk' (CyclicSCC as) = CyclicSCC  `fmap` zonk' as
+
 instance Zonk a => Zonk [a] where
   zonk' = traverse zonk'
 
@@ -82,10 +92,20 @@ instance (Ord a, Zonk a) => Zonk (Set.Set a) where
   zonk' as = do as' <- traverse zonk' (Set.toList as)
                 return (Set.fromList as')
 
+instance (Ord k, Zonk k, Zonk a) => Zonk (Map.Map k a) where
+  zonk' m = do m' <- traverse zonk' (Map.toList m)
+               return (Map.fromList m')
+
 instance (Zonk a, Zonk b) => Zonk (a,b) where
   zonk' (a,b) = do a' <- zonk' a
                    b' <- zonk' b
                    return (a',b')
+
+instance (Zonk a, Zonk b, Zonk c) => Zonk (a,b,c) where
+  zonk' (a,b,c) = do a' <- zonk' a
+                     b' <- zonk' b
+                     c' <- zonk' c
+                     return (a',b',c')
 
 instance Zonk Action where
   zonk' Start         = return Start
@@ -109,7 +129,7 @@ instance Zonk Term where
                    Nothing  -> return tm
     _      -> return tm
 
-instance Zonk CausalLink where
+instance Zonk Link where
   zonk' (Link l p r) = Link <$> zonk' l
                             <*> zonk' p
                             <*> zonk' r
@@ -122,6 +142,7 @@ class Zonk a => Unify a where
 instance Unify a => Unify [a] where
   mgu' (a:as) (b:bs) = do mgu' a b
                           mgu' as bs
+  mgu' []     []     = return ()
   mgu' _      _      = raise UnificationFailed
 
   match' (a:as) (b:bs) = do match' a b
@@ -160,6 +181,7 @@ instance Unify Term where
 
   mgu' (TVar v1) (TVar v2) | v1 == v2 = return ()
 
+  -- unification variables bind in either direction
   mgu' (TVar v1) b =
     do mb <- lookupVar v1
        case mb of

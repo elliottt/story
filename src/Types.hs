@@ -122,12 +122,12 @@ data Step = Step { sName     :: String
                  } deriving (Show)
 
 -- | Causal links: between steps a and b, condition c is protected.
-data CausalLink = Link { clLeft  :: Action
-                       , clPred  :: Pred
-                       , clRight :: Action
-                       } deriving (Show,Eq,Ord)
+data Link = Link { clLeft  :: Action
+                 , clPred  :: Pred
+                 , clRight :: Action
+                 } deriving (Show,Eq,Ord)
 
-instance PP CausalLink where
+instance PP Link where
   pp (Link l p r) = pp l <+> char '-' <> braces (pp p) <> text "->" <+> pp r
 
 type Assumps = [Pred]

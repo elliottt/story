@@ -4,18 +4,34 @@
 
 module Plan where
 
+import           Pretty
 import           PlanState
 import           Types
 import qualified Unify
 
 import           Control.Applicative
-import           MonadLib
+import           Data.Foldable ( forM_ )
+import           Data.List ( partition )
+import qualified Data.Set as Set
+import           MonadLib hiding ( forM_ )
+
+import           Debug.Trace
 
 
-pop :: Domain -> Assumps -> Goals -> Maybe Plan
+pop :: Domain -> Assumps -> Goals -> Maybe [Action]
 pop d as gs = runPlanM d p $
   do solveGoals goals
-     PlanM (rwPlan `fmap` get)
+     zonk =<< fromPlan orderedActions
+  where
+  (p,goals) = initialPlan as gs
+
+pop' :: Domain -> Assumps -> Goals -> Maybe Plan
+pop' d as gs = runPlanM d p $
+  do solveGoals goals
+     e <- fromPlan zonkPlan
+     case e of
+       Right plan -> return plan
+       Left _     -> mzero
   where
   (p,goals) = initialPlan as gs
 
@@ -43,8 +59,21 @@ runPlanM d p m =
           }
 
 
+fromPlan :: (Plan -> a) -> PlanM a
+fromPlan f = PlanM (f . rwPlan <$> get)
+
+updatePlan_ :: (Plan -> Plan) -> PlanM ()
+updatePlan_ f = PlanM $ do rw <- get
+                           set $! rw { rwPlan = f (rwPlan rw) }
+
+updatePlan :: (Plan -> (Plan,a)) -> PlanM a
+updatePlan f = PlanM $ do rw <- get
+                          let (p',a) = f (rwPlan rw)
+                          set $! rw { rwPlan = p' }
+                          return a
+
 getBinds :: PlanM Unify.Env
-getBinds  = PlanM (getBindings . rwPlan <$> get)
+getBinds  = fromPlan getBindings
 
 setBinds :: Unify.Env -> PlanM ()
 setBinds bs = PlanM $ do rw <- get
@@ -62,10 +91,15 @@ fresh v = do ix <- nextId
 fresh_ :: PlanM Term
 fresh_  = fresh (Var Nothing undefined)
 
-freshInst :: Inst a => Schema a -> PlanM ([Term],a)
+freshInst :: Schema Operator -> PlanM (Action,Operator)
 freshInst (Forall vs a) =
   do ts <- mapM fresh vs
-     return (ts,inst ts a)
+     ix <- nextId
+     let oper = inst ts a
+     return (Inst ix (oName oper) ts, oper)
+
+getDomain :: PlanM Domain
+getDomain  = PlanM (rwDomain <$> get)
 
 -- XXX extending the binding environment might invalidate the causal links.
 -- What's the best way to detect this?
@@ -76,7 +110,7 @@ match l r =
        Right bs' -> setBinds bs'
        Left _    -> mzero
 
-unify :: Unify.Unify tm => tm -> tm -> PlanM ()
+unify :: (Unify.Unify tm, PP tm) => tm -> tm -> PlanM ()
 unify l r =
   do bs <- getBinds
      case Unify.mgu bs l r of
@@ -90,21 +124,19 @@ zonk tm =
        Right tm' -> return tm'
        Left _    -> mzero
 
--- | Find an operator that satisfies the goal, and add its preconditions as
--- additional goals of the chosen operator.
-findAction :: Goal -> PlanM ([Term],Operator)
-findAction Goal { .. } =
-  do rw <- PlanM get
-     msum [ achieves op gPred | op <- rwDomain rw ]
+dbg :: Show a => String -> a -> PlanM ()
+dbg l a = traceM (l ++ ": " ++ show a)
 
--- | Return the instantiated action that achieves the condition p.  If the
--- action does not achieve p, fail wiht mzero.
-achieves :: Schema Operator -> Pred -> PlanM ([Term],Operator)
-achieves op p =
-  do (ps,iop) <- freshInst op
-     _        <- msum [ match c p | c <- oPostcond iop ]
-     zop      <- zonk iop
-     return (ps,zop)
+zonkDbg :: (PP a, Unify.Zonk a) => String -> a -> PlanM ()
+zonkDbg l a = do a' <- zonk a
+                 traceM (show (hang (text l <> char ':') 2 (pp a')))
+
+dumpActions =
+  do acts <- fromPlan getActions
+     forM_ acts $ \ (a,b) -> zonkDbg "action" (a,after b)
+
+     sccs <- fromPlan scc
+     mapM_ (zonkDbg "scc" . fmap fst) sccs
 
 
 -- Planner ---------------------------------------------------------------------
@@ -113,34 +145,75 @@ achieves op p =
 solveGoals :: [Goal] -> PlanM ()
 
 solveGoals (g:gs) =
-  do gs' <- solveGoal g
-     solveGoals (gs ++ gs')
+  do (act,newGoals) <- solveGoal g
+
+     resolveThreats
+
+     guard =<< fromPlan planConsistent
+
+     solveGoals (gs ++ newGoals)
 
 solveGoals [] =
      return ()
 
-
--- | Solve a goal, yielding out any sub-goals.
-solveGoal :: Goal -> PlanM [Goal]
 solveGoal g =
-  do (act,gs') <- msum [ do act <- byAssumption g
-                            return (act,[])
-                       , byNewAction g ]
+  do (s_add,gs) <- msum [ byAssumption g, byNewStep g ]
 
-     return gs'
+     updatePlan_ ( (s_add `isBefore` gSource g)
+                 . addLink (Link s_add (gPred g) (gSource g)) )
+
+     return (s_add,gs)
 
 
--- | Solve a goal by an existing action.
-byAssumption :: Goal -> PlanM Action
 byAssumption Goal { .. } =
-     mzero
+  do candidates <- fromPlan getActions
+     msum (map tryAssump candidates)
+  where
+  tryAssump (act,node) =
+    do msum [ unify gPred q | q <- effects node ]
+       return (act, [])
 
 
--- | Solve a goal by introducing a new action, and returning any new goals it
--- introduces.
-byNewAction :: Goal -> PlanM (Action, [Goal])
-byNewAction Goal { .. } =
-     mzero
+byNewStep Goal { .. } =
+  do dom <- getDomain
+     msum (map tryInst dom)
+  where
+  tryInst s =
+    do (act,op) <- freshInst s
+       msum [ match q gPred | q <- oPostcond op ]
+
+       gs <- updatePlan (addAction act op)
+       updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
+
+       return (act,gs)
+
+
+resolveThreats =
+  do as    <- fromPlan getActions
+     links <- fromPlan getLinks
+     bs    <- getBinds
+
+     let unifies p q = case Unify.mgu bs p q of
+                         Right {} -> True
+                         Left {}  -> False
+
+         isThreatened act es (Link l p r) =
+           l /= act &&
+           r /= act &&
+           any (unifies (predNegate p)) es
+
+         threats = [ (act,link) | (act,node) <- as
+                                , link       <- Set.toList links
+                                , isThreatened act (effects node) link ]
+
+     unless (null threats) $
+       do forM_ threats $ \ (act,Link l _ r) ->
+            do f <- msum [ do guard (r /= Finish)
+                              return (r `isBefore` act)
+                         , do guard (l /= Start)
+                              return (act `isBefore` l)
+                         ]
+               updatePlan_ f
 
 
 -- Testing ---------------------------------------------------------------------
@@ -171,11 +244,20 @@ testAssumps  = [ Pred True "At" ["Home"]
 
 testGoals :: Goals
 testGoals  = [ Pred True "Have" ["Milk"]
-             -- , Pred True "Have" ["Banana"]
+             , Pred True "At" ["Home"]
+             , Pred True "Have" ["Banana"]
              , Pred True "Have" ["Drill"]
              ]
 
 test :: IO ()
 test = case pop testDomain testAssumps testGoals of
-  Just plan -> print (orderedActions plan)
+  Just plan -> mapM_ (print . pp) plan
   Nothing   -> putStrLn "No plan"
+
+test' :: Plan
+test'  = plan
+  where
+  Just plan = pop' testDomain testAssumps testGoals
+
+draw :: Plan -> IO ()
+draw plan = putStrLn (drawPlan plan)
