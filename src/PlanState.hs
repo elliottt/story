@@ -6,7 +6,6 @@ module PlanState (
   , initialPlan
   , addAction
   , zonkPlan
-  , drawPlan
   , getActions
   , planConsistent
 
@@ -16,9 +15,7 @@ module PlanState (
 
     -- ** Ordering Constraints
   , isBefore
-  , ordsConsistent
   , orderedActions
-  , scc
 
     -- ** Causal Links
   , addLink
@@ -26,7 +23,6 @@ module PlanState (
 
     -- ** Graph Nodes
   , Node()
-  , after
   , effects
 
     -- * Goals
@@ -45,7 +41,6 @@ import qualified Data.Graph.SCC as SCC
 import           Data.List ( sortBy )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import qualified Data.Tree as Tree
 
 
 -- Types -----------------------------------------------------------------------
@@ -73,12 +68,6 @@ data Goal = Goal { gSource  :: Action
 
 
 -- PlanState Operations --------------------------------------------------------
-
-drawPlan :: Plan -> String
-drawPlan p = Tree.drawForest (map (fmap drawNode) (Graph.dff graph))
-  where
-  (graph, fromVertex, _) = actionGraph p nodeAfter
-  drawNode v             = show (pp (fst (fromVertex v)))
 
 zonkPlan :: Plan -> Either Error Plan
 zonkPlan plan = case zonk (pBindings plan) (pNodes plan) of
@@ -196,9 +185,6 @@ addBefore act node = node { nodeBefore = Set.insert act (nodeBefore node) }
 
 effects :: Node -> [Pred]
 effects Node { .. } = oPostcond nodeInst
-
-after :: Node -> [Action]
-after Node { .. } = Set.toList nodeAfter
 
 
 -- Utility Instances -----------------------------------------------------------

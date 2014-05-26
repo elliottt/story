@@ -24,16 +24,6 @@ pop d as gs = runPlanM d p $
   where
   (p,goals) = initialPlan as gs
 
-pop' :: Domain -> Assumps -> Goals -> Maybe Plan
-pop' d as gs = runPlanM d p $
-  do solveGoals goals
-     e <- fromPlan zonkPlan
-     case e of
-       Right plan -> return plan
-       Left _     -> mzero
-  where
-  (p,goals) = initialPlan as gs
-
 
 -- Planning Monad --------------------------------------------------------------
 
@@ -86,9 +76,6 @@ nextId  = PlanM $ do rw <- get
 fresh :: Var -> PlanM Term
 fresh v = do ix <- nextId
              return (TVar v { varIndex = ix })
-
-fresh_ :: PlanM Term
-fresh_  = fresh (Var Nothing undefined)
 
 freshInst :: Schema Operator -> PlanM (Action,Operator)
 freshInst (Forall vs a) =
@@ -249,11 +236,3 @@ test :: IO ()
 test = case pop testDomain testAssumps testGoals of
   Just plan -> mapM_ (print . pp) plan
   Nothing   -> putStrLn "No plan"
-
-test' :: Plan
-test'  = plan
-  where
-  Just plan = pop' testDomain testAssumps testGoals
-
-draw :: Plan -> IO ()
-draw plan = putStrLn (drawPlan plan)
