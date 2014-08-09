@@ -1,6 +1,6 @@
 module FloydWarshall where
 
-import Control.Monad ( forM_, when )
+import Control.Monad ( forM_, when, unless )
 import Control.Monad.ST
 import Data.Array.ST
 import Data.Array.Unboxed
@@ -23,11 +23,11 @@ floydWarshall graph =
 
      forM_ ixs $ \ k ->
        forM_ ixs $ \ i ->
-         forM_ ixs $ \ j ->
-           do ij <- readArray dist (i,j)
-              ik <- readArray dist (i,k)
-              kj <- readArray dist (k,j)
-              when (ik && kj || ij) (writeArray dist (i,j) True)
+         do ik <- readArray dist (i,k)
+            when ik $ forM_ ixs $ \ j ->
+                        do kj <- readArray dist (k,j)
+                           when kj (writeArray dist (i,j) True)
+
      return dist
 
   where
