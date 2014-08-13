@@ -17,7 +17,7 @@ import           MonadLib hiding ( forM_ )
 import           Debug.Trace
 
 
-pop :: Domain -> Assumps -> Goals -> Maybe [Action]
+pop :: Domain -> Assumps -> Goals -> Maybe [Step]
 pop d as gs = runPlanM d p $
   do solveGoals goals
      zonk =<< fromPlan orderedActions
@@ -77,12 +77,12 @@ fresh :: Var -> PlanM Term
 fresh v = do ix <- nextId
              return (TVar v { varIndex = ix })
 
-freshInst :: Schema Operator -> PlanM (Action,Operator)
+freshInst :: Schema Action -> PlanM (Step,Action)
 freshInst (Forall vs a) =
   do ts <- mapM fresh vs
      ix <- nextId
      let oper = inst ts a
-     return (Inst ix (oName oper) ts, oper)
+     return (Inst ix (aName oper) ts, oper)
 
 getDomain :: PlanM Domain
 getDomain  = PlanM (rwDomain <$> get)
@@ -145,7 +145,7 @@ solveGoal g =
      return gs
 
 
-byAssumption :: Goal -> PlanM (Action,[Goal])
+byAssumption :: Goal -> PlanM (Step,[Goal])
 byAssumption Goal { .. } =
   do candidates <- fromPlan getActions
      msum (map tryAssump candidates)
@@ -155,14 +155,14 @@ byAssumption Goal { .. } =
        return (act, [])
 
 
-byNewStep :: Goal -> PlanM (Action,[Goal])
+byNewStep :: Goal -> PlanM (Step,[Goal])
 byNewStep Goal { .. } =
   do dom <- getDomain
      msum (map tryInst dom)
   where
   tryInst s =
     do (act,op) <- freshInst s
-       msum [ match q gPred | q <- oPostcond op ]
+       msum [ match q gPred | q <- aEffect op ]
 
        gs <- updatePlan (addAction act op)
        updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
@@ -201,38 +201,80 @@ resolveThreats  =
 
 -- Testing ---------------------------------------------------------------------
 
-buy :: Schema Operator
+buy :: Schema Action
 buy  = forall ["x", "store"] $ \ [x,store] ->
-  Operator { oName     = "Buy"
-           , oPrecond  = [ Pred True "At" [store], Pred True "Sells" [store,x] ]
-           , oPostcond = [ Pred True "Have" [x] ]
-           }
+  emptyAction { aName    = "Buy"
+              , aPrecond = [ PFormula $ Formula True "At"    [store]
+                           , PFormula $ Formula True "Sells" [store,x] ]
+              , aEffect  = [ PFormula $ Formula True "Have"  [x] ]
+              }
 
-go :: Schema Operator
+go :: Schema Action
 go  = forall ["x", "y"] $ \ [x,y] ->
-  Operator { oName     = "Go"
-           , oPrecond  = [ Pred True "At" [x] ]
-           , oPostcond = [ Pred True "At" [y], Pred False "At" [x] ]
-           }
+  emptyAction { aName    = "Go"
+              , aPrecond = [ PFormula $ Formula True  "At" [x] ]
+              , aEffect  = [ PFormula $ Formula True  "At" [y]
+                           , PFormula $ Formula False "At" [x] ]
+              }
 
 testDomain :: Domain
 testDomain  = [buy,go]
 
 testAssumps :: Assumps
-testAssumps  = [ Pred True "At" ["Home"]
-               , Pred True "Sells" ["SM","Milk"]
-               , Pred True "Sells" ["SM","Banana"]
-               , Pred True "Sells" ["HW","Drill"]
+testAssumps  = [ PFormula $ Formula True "At"    ["Home"]
+               , PFormula $ Formula True "Sells" ["SM","Milk"]
+               , PFormula $ Formula True "Sells" ["SM","Banana"]
+               , PFormula $ Formula True "Sells" ["HW","Drill"]
                ]
 
 testGoals :: Goals
-testGoals  = [ Pred True "Have" ["Milk"]
-             , Pred True "At" ["Home"]
-             , Pred True "Have" ["Banana"]
-             , Pred True "Have" ["Drill"]
+testGoals  = [ PFormula $ Formula True "Have" ["Milk"]
+             , PFormula $ Formula True "At" ["Home"]
+             , PFormula $ Formula True "Have" ["Banana"]
+             , PFormula $ Formula True "Have" ["Drill"]
              ]
+
+-- testDomain =
+--   [ forall [] $ \ [] ->
+--     Operator { oName     = "RemoveSpareFromTrunk"
+--              , oPrecond  = [ Pred True "At" ["Spare", "Trunk"] ]
+--              , oPostcond = [ Pred True "At" ["Spare", "Ground"]
+--                            , Pred False "At" ["Spare", "Trunk"] ]
+--              }
+--   , forall [] $ \ [] ->
+--     Operator { oName     = "RemoveFlatFromAxel"
+--              , oPrecond  = [ Pred True "At" ["Flat", "Axle"] ]
+--              , oPostcond = [ Pred True "At" ["Flat", "Ground"]
+--                            , Pred False "At" ["Flat", "Axle"] ]
+--              }
+-- 
+--   , forall [] $ \ [] ->
+--     Operator { oName     = "PutSpareOnAxle"
+--              , oPrecond  = [ Pred True  "At" ["Spare", "Ground"]
+--                            , Pred False "At" ["Flat", "Axle"] ]
+--              , oPostcond = [ Pred True  "At" ["Spare", "Axle"]
+--                            , Pred False "At" ["Spare", "Ground"] ]
+--              }
+--   , forall [] $ \ [] ->
+--     Operator { oName = "LeaveOvernight"
+--              , oPrecond = []
+--              , oPostcond = [ Pred False "At" ["Spare", "Ground"]
+--                            , Pred False "At" ["Spare", "Axle"]
+--                            , Pred False "At" ["Spare", "Trunk"]
+--                            , Pred False "At" ["Flat", "Ground"]
+--                            , Pred False "At" ["Flat", "Axle"] ]
+--              }
+--   ]
+-- 
+-- testAssumps = [ Pred True "At" ["Flat", "Axle"]
+--               , Pred True "At" ["Spare", "Trunk"] ]
+-- 
+-- testGoals = [ Pred True "At" ["Spare", "Axle"] ]
 
 test :: IO ()
 test = case pop testDomain testAssumps testGoals of
   Just plan -> mapM_ (print . pp) plan
   Nothing   -> putStrLn "No plan"
+
+
+-- -----------------------------------------------------------------------------

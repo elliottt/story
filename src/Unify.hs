@@ -107,19 +107,31 @@ instance (Zonk a, Zonk b, Zonk c) => Zonk (a,b,c) where
                      c' <- zonk' c
                      return (a',b',c')
 
-instance Zonk Action where
+instance Zonk Step where
   zonk' Start         = return Start
   zonk' (Inst i p ts) = Inst i p `fmap` zonk' ts
   zonk' Finish        = return Finish
 
-instance Zonk Operator where
-  zonk' (Operator n ps qs) =
-    do oPrecond  <- zonk' ps
-       oPostcond <- zonk' qs
-       return Operator { oName = n, .. }
+instance Zonk Action where
+  zonk' (Action aName as aHappening cs ps qs) =
+    do aPrecond     <- zonk' ps
+       aActors      <- zonk' as
+       aConstraints <- zonk' cs
+       aEffect      <- zonk' qs
+       return Action { .. }
+
+instance Zonk Constraint where
+  zonk' (CNeq a b)  = CNeq    `fmap` zonk' a `ap` zonk' b
+  zonk' (CAssert p) = CAssert `fmap` zonk' p
 
 instance Zonk Pred where
-  zonk' (Pred n p args) = Pred n p `fmap` zonk' args
+  zonk' (PFormula p)     = PFormula `fmap` zonk' p
+  zonk' (PIntends who p) = PIntends `fmap` zonk' who `ap` zonk' p
+
+instance Zonk Formula where
+  zonk' (Formula fNeg fSym ts) =
+    do fArgs <- zonk' ts
+       return Formula { .. }
 
 instance Zonk Term where
   zonk' tm = case tm of
@@ -158,14 +170,25 @@ instance (Unify a, Unify b) => Unify (a,b) where
                           match' b d
 
 instance Unify Pred where
-  mgu' (Pred n1 p1 args1) (Pred n2 p2 args2)
+  mgu' (PFormula p)     (PFormula q)       = mgu' p q
+  mgu' (PIntends who p) (PIntends who' p') = do mgu' who who'
+                                                mgu' p   p'
+  mgu' _                _                  = raise UnificationFailed
+
+  match' (PFormula p)     (PFormula q)       = match' p q
+  match' (PIntends who p) (PIntends who' p') = do match' who who'
+                                                  match' p   p'
+  match' _                _                  = raise MatchingFailed
+
+instance Unify Formula where
+  mgu' (Formula n1 p1 args1) (Formula n2 p2 args2)
     | n1 == n2 && p1 == p2 =
       mgu' args1 args2
 
     | otherwise =
       raise UnificationFailed
 
-  match' (Pred n1 p1 args1) (Pred n2 p2 args2)
+  match' (Formula n1 p1 args1) (Formula n2 p2 args2)
     | n1 == n2 && p1 == p2 =
       match' args1 args2
 
