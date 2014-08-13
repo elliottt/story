@@ -113,16 +113,11 @@ instance Zonk Step where
   zonk' Finish        = return Finish
 
 instance Zonk Action where
-  zonk' (Action aName as aHappening cs ps qs) =
+  zonk' (Action aName as aHappening ps qs) =
     do aPrecond     <- zonk' ps
        aActors      <- zonk' as
-       aConstraints <- zonk' cs
        aEffect      <- zonk' qs
        return Action { .. }
-
-instance Zonk Constraint where
-  zonk' (CNeq a b)  = CNeq    `fmap` zonk' a `ap` zonk' b
-  zonk' (CAssert p) = CAssert `fmap` zonk' p
 
 instance Zonk Pred where
   zonk' (PFormula p)     = PFormula `fmap` zonk' p

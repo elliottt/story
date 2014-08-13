@@ -11,6 +11,7 @@ import qualified Unify
 
 import           Control.Applicative
 import           Data.Foldable ( forM_ )
+import           Data.Monoid ( mappend )
 import qualified Data.Set as Set
 import           MonadLib hiding ( forM_ )
 
@@ -19,7 +20,7 @@ import           Debug.Trace
 
 pop :: Domain -> Assumps -> Goals -> Maybe [Step]
 pop d as gs = runPlanM d p $
-  do solveGoals goals
+  do solveGoals Flaws { fOpenConditions = goals }
      zonk =<< fromPlan orderedActions
   where
   (p,goals) = initialPlan as gs
@@ -121,28 +122,31 @@ zonkDbg l a = do a' <- zonk a
 -- Planner ---------------------------------------------------------------------
 
 -- | Solve a series of goals.
-solveGoals :: [Goal] -> PlanM ()
+solveGoals :: Flaws -> PlanM ()
+solveGoals flaws
+  | noFlaws flaws =
+    return ()
 
-solveGoals (g:gs) =
-  do newGoals <- solveGoal g
+  | otherwise =
+    do (g,flaws') <- nextOpenCondition flaws
 
-     resolveThreats
+       newFlaws <- solveGoal g
 
-     guard =<< fromPlan planConsistent
+       resolveThreats
 
-     solveGoals (gs ++ newGoals)
+       guard =<< fromPlan planConsistent
 
-solveGoals [] =
-     return ()
+       solveGoals (flaws' `mappend` newFlaws)
 
-solveGoal :: Goal -> PlanM [Goal]
+
+solveGoal :: Goal -> PlanM Flaws
 solveGoal g =
   do (s_add,gs) <- msum [ byAssumption g, byNewStep g ]
 
      updatePlan_ ( (s_add `isBefore` gSource g)
                  . addLink (Link s_add (gPred g) (gSource g)) )
 
-     return gs
+     return Flaws { fOpenConditions = gs }
 
 
 byAssumption :: Goal -> PlanM (Step,[Goal])

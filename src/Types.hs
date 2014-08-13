@@ -13,10 +13,6 @@ import           Data.String ( IsString(..) )
 
 -- Terms -----------------------------------------------------------------------
 
-data Constraint = CNeq Term Term  -- ^ Inequality
-                | CAssert Formula -- ^ Assertions about a term
-                  deriving (Eq,Show,Ord)
-
 data Pred = PFormula Formula         -- ^ A simple formula
           | PIntends Term Formula -- ^ A character intent
             deriving (Eq,Show,Ord)
@@ -32,6 +28,8 @@ data Formula = Formula { fNeg  :: Bool
 
 negFormula :: Formula -> Formula
 negFormula p = p { fNeg = not (fNeg p) }
+
+type Type = Term
 
 data Term = TVar Var
           | TGen Var
@@ -56,7 +54,6 @@ instance Ord Var where
 data Action = Action { aName        :: String
                      , aActors      :: [Term]
                      , aHappening   :: Bool
-                     , aConstraints :: [Constraint]
                      , aPrecond     :: [Pred]
                      , aEffect      :: [Pred]
                      } deriving (Show,Eq,Ord)
@@ -65,7 +62,6 @@ emptyAction :: Action
 emptyAction  = Action { aName        = ""
                       , aActors      = []
                       , aHappening   = False
-                      , aConstraints = []
                       , aPrecond     = []
                       , aEffect      = [] }
 
@@ -93,10 +89,6 @@ class Inst a where
 
 instance Inst a => Inst [a] where
   inst as = map (inst as)
-
-instance Inst Constraint where
-  inst as (CNeq a b)  = CNeq (inst as a) (inst as b)
-  inst as (CAssert p) = CAssert (inst as p)
 
 instance Inst Pred where
   inst as (PFormula f)     = PFormula (inst as f)
@@ -152,10 +144,6 @@ instance Ord Step where
 
 
 -- Pretty-printing -------------------------------------------------------------
-
-instance PP Constraint where
-  pp (CNeq a b)  = pp a <+> text "/=" <+> pp b
-  pp (CAssert p) = pp p
 
 instance PP Pred where
   pp (PFormula p)     = pp p

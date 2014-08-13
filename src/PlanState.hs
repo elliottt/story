@@ -27,6 +27,7 @@ module PlanState (
 
     -- * Goals
   , Goal(..)
+  , Flaws(..), noFlaws, nextOpenCondition
   ) where
 
 import FloydWarshall ( transitiveClosure )
@@ -35,11 +36,14 @@ import Unify ( Error, Env, Zonk(..), zonk )
 import Types
 
 import           Control.Applicative ( (<$>), (<*>) )
+import           Control.Monad ( MonadPlus(..) )
 import           Data.Array.IArray ( (!) )
+import           Data.Function ( on )
 import qualified Data.Graph as Graph
 import qualified Data.Graph.SCC as SCC
 import           Data.List ( sortBy )
 import qualified Data.Map.Strict as Map
+import           Data.Monoid ( Monoid(..) )
 import qualified Data.Set as Set
 
 
@@ -61,10 +65,30 @@ data Node = Node { nodeInst     :: Action
                    -- ^ Nodes that come after this one in the graph
                  } deriving (Show)
 
+-- | An open condition flaw.
 data Goal = Goal { gSource  :: Step
                  , gPred    :: Pred
                  , gEffects :: [Pred]
-                 } deriving (Show)
+                 } deriving (Show,Eq,Ord)
+
+data Flaws = Flaws { fOpenConditions :: [Goal]
+                   } deriving (Show)
+
+instance Monoid Flaws where
+  mempty      = Flaws { fOpenConditions = [] }
+  mappend l r = Flaws { fOpenConditions = merge fOpenConditions
+                      }
+    where
+    merge p = (mappend `on` p) l r
+
+noFlaws :: Flaws -> Bool
+noFlaws Flaws { .. } = null fOpenConditions
+
+nextOpenCondition :: MonadPlus m => Flaws -> m (Goal,Flaws)
+nextOpenCondition flaws =
+  case fOpenConditions flaws of
+    g:gs -> return (g, flaws { fOpenConditions = gs })
+    _    -> mzero
 
 
 -- PlanState Operations --------------------------------------------------------
