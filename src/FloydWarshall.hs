@@ -1,6 +1,6 @@
 module FloydWarshall where
 
-import Control.Monad ( forM_, when, unless )
+import Control.Monad ( forM_, when )
 import Control.Monad.ST
 import Data.Array.ST
 import Data.Array.Unboxed
