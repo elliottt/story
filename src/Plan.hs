@@ -55,6 +55,8 @@ data Plan = Plan { pBindings :: Env
                    -- ^ Instantiated actions, and their dependencies
                  , pLinks    :: Set.Set Link
                    -- ^ Causal links
+                 , pFrames   :: Set.Set Frame
+                   -- ^ Frames of commitment
                  } deriving (Show)
 
 data Node = Node { nodeInst     :: Action
@@ -108,6 +110,7 @@ initialPlan as gs = ((Start `isBefore` Finish) psFinish, flaws)
   emptyPlan        = Plan { pBindings = Map.empty
                           , pNodes    = Map.empty
                           , pLinks    = Set.empty
+                          , pFrames   = Set.empty
                           }
 
   (psStart,_)      = addAction Start emptyAction { aName   = "<Start>"

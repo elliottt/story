@@ -9,6 +9,7 @@ import Pretty
 import           Control.Monad ( guard )
 import           Data.Function ( on )
 import           Data.String ( IsString(..) )
+import qualified Data.Set as Set
 
 
 -- Terms -----------------------------------------------------------------------
@@ -25,7 +26,13 @@ data Pred = Pred { pNeg  :: Bool
 negPred :: Pred -> Pred
 negPred p = p { pNeg = not (pNeg p) }
 
+data Const = CNeq Term Term -- ^ Inequality
+           | CPred Pred     -- ^ Typing predicates
+             deriving (Show,Eq,Ord)
+
 type Type = Term
+
+type Actor = Term
 
 data Term = TVar Var
           | TGen Var
@@ -48,8 +55,9 @@ instance Ord Var where
 
 
 data Action = Action { aName        :: String
-                     , aActors      :: [Term]
+                     , aActors      :: [Actor]
                      , aHappening   :: Bool
+                     , aConstraints :: [Const]
                      , aPrecond     :: [Pred]
                      , aEffect      :: [Effect]
                      } deriving (Show,Eq,Ord)
@@ -58,6 +66,7 @@ emptyAction :: Action
 emptyAction  = Action { aName        = ""
                       , aActors      = []
                       , aHappening   = False
+                      , aConstraints = []
                       , aPrecond     = []
                       , aEffect      = [] }
 
@@ -111,6 +120,13 @@ data Link = Link { clLeft  :: Step
                  , clPred  :: Pred
                  , clRight :: Step
                  } deriving (Show,Eq,Ord)
+
+-- | Frames of commitment.
+data Frame = Frame { fSteps :: Set.Set Step
+                   , fActor :: Actor
+                   , fGoal  :: Term
+                   , fFinal :: Step
+                   } deriving (Show,Eq,Ord)
 
 type Assumps = [Pred]
 

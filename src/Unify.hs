@@ -12,7 +12,7 @@ module Unify (
 import Pretty
 import Types
 
-import           Control.Applicative
+import           Control.Applicative ( (<$>), Applicative(..) )
 import           Data.Graph ( SCC(..) )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
@@ -112,10 +112,15 @@ instance Zonk Step where
   zonk' (Inst i p ts) = Inst i p `fmap` zonk' ts
   zonk' Finish        = return Finish
 
+instance Zonk Const where
+  zonk' (CNeq a b) = CNeq  `fmap` zonk' a `ap` zonk' b
+  zonk' (CPred p)  = CPred `fmap` zonk' p
+
 instance Zonk Action where
-  zonk' (Action aName as aHappening ps qs) =
+  zonk' (Action aName as aHappening cs ps qs) =
     do aPrecond     <- zonk' ps
        aActors      <- zonk' as
+       aConstraints <- zonk' cs
        aEffect      <- zonk' qs
        return Action { .. }
 
@@ -174,6 +179,17 @@ instance Unify Effect where
   match' (EIntends who p) (EIntends who' p') = do match' who who'
                                                   match' p   p'
   match' _                _                  = raise MatchingFailed
+
+instance Unify Const where
+  mgu' (CNeq a b) (CNeq x y) = do mgu' a x
+                                  mgu' b y
+  mgu' (CPred p)  (CPred q)  =    mgu' p q
+  mgu' _          _          =    raise UnificationFailed
+
+  match' (CNeq a b) (CNeq x y) = do match' a x
+                                    match' b y
+  match' (CPred p)  (CPred q)  =    match' p q
+  match' _          _          =    raise MatchingFailed
 
 instance Unify Pred where
   mgu' (Pred n1 p1 args1) (Pred n2 p2 args2)
