@@ -13,21 +13,17 @@ import           Data.String ( IsString(..) )
 
 -- Terms -----------------------------------------------------------------------
 
-data Pred = PFormula Formula         -- ^ A simple formula
-          | PIntends Term Formula -- ^ A character intent
-            deriving (Eq,Show,Ord)
+data Effect = EPred Pred
+            | EIntends Term Pred
+              deriving (Show,Eq,Ord)
 
-predNegate :: Pred -> Pred
-predNegate (PFormula p)     = PFormula (negFormula p)
-predNegate (PIntends who p) = PIntends who (negFormula p)
+data Pred = Pred { pNeg  :: Bool
+                 , pSym  :: String 
+                 , pArgs :: [Term]
+                 } deriving (Show,Eq,Ord)
 
-data Formula = Formula { fNeg  :: Bool
-                       , fSym  :: String 
-                       , fArgs :: [Term]
-                       } deriving (Show,Eq,Ord)
-
-negFormula :: Formula -> Formula
-negFormula p = p { fNeg = not (fNeg p) }
+negPred :: Pred -> Pred
+negPred p = p { pNeg = not (pNeg p) }
 
 type Type = Term
 
@@ -55,7 +51,7 @@ data Action = Action { aName        :: String
                      , aActors      :: [Term]
                      , aHappening   :: Bool
                      , aPrecond     :: [Pred]
-                     , aEffect      :: [Pred]
+                     , aEffect      :: [Effect]
                      } deriving (Show,Eq,Ord)
 
 emptyAction :: Action
@@ -90,12 +86,12 @@ class Inst a where
 instance Inst a => Inst [a] where
   inst as = map (inst as)
 
-instance Inst Pred where
-  inst as (PFormula f)     = PFormula (inst as f)
-  inst as (PIntends who p) = PIntends (inst as who) (inst as p)
+instance Inst Effect where
+  inst as (EPred f)        = EPred    (inst as f)
+  inst as (EIntends who p) = EIntends (inst as who) (inst as p)
 
-instance Inst Formula where
-  inst as form = form { fArgs = inst as (fArgs form) }
+instance Inst Pred where
+  inst as p = p { pArgs = inst as (pArgs p) }
 
 instance Inst Term where
   inst as (TGen v) = as !! varIndex v
@@ -145,14 +141,14 @@ instance Ord Step where
 
 -- Pretty-printing -------------------------------------------------------------
 
-instance PP Pred where
-  pp (PFormula p)     = pp p
-  pp (PIntends who p) = text "intends" <> parens (pp who <> comma <+> pp p)
+instance PP Effect where
+  pp (EPred p)        = pp p
+  pp (EIntends who p) = text "intends" <> parens (pp who <> comma <+> pp p)
 
-instance PP Formula where
-  pp Formula { .. } = ppNeg <> text fSym <> parens (commas (map pp fArgs))
+instance PP Pred where
+  pp Pred { .. } = ppNeg <> text pSym <> parens (commas (map pp pArgs))
     where
-    ppNeg | fNeg      = char '~'
+    ppNeg | pNeg      = char '~'
           | otherwise = empty
 
 instance PP Term where

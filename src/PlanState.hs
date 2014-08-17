@@ -67,8 +67,8 @@ data Node = Node { nodeInst     :: Action
 
 -- | An open condition flaw.
 data Goal = Goal { gSource  :: Step
-                 , gPred    :: Pred
-                 , gEffects :: [Pred]
+                 , gGoal    :: Pred
+                 , gEffects :: [Effect]
                  } deriving (Show,Eq,Ord)
 
 data Flaws = Flaws { fOpenConditions :: [Goal]
@@ -111,10 +111,12 @@ initialPlan as gs = ((Start `isBefore` Finish) psFinish, goals)
                           }
 
   (psStart,_)      = addAction Start emptyAction { aName   = "<Start>"
-                                                 , aEffect = as } emptyPlan
+                                                 , aEffect = map EPred as
+                                                 } emptyPlan
 
   (psFinish,goals) = addAction Finish emptyAction { aName     = "<Finish>"
-                                                  , aPrecond  = gs } psStart
+                                                  , aPrecond  = gs
+                                                  } psStart
 -- | Retrieve variable bindings from the plan.
 getBindings :: Plan -> Env
 getBindings  = pBindings
@@ -132,7 +134,7 @@ modifyAction :: Step -> (Node -> Node) -> (Plan -> Plan)
 modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 
 -- | Add an action, with its instantiation, to the plan state.  All
--- preconditions of the goal will be considered goals, and appended to the
+-- preconditions of the action will be considered goals, and appended to the
 -- agenda.
 addAction :: Step -> Action -> Plan -> (Plan,[Goal])
 addAction act oper p = (p',newGoals)
@@ -205,7 +207,7 @@ addAfter act node = node { nodeAfter = Set.insert act (nodeAfter node) }
 addBefore :: Step -> Node -> Node
 addBefore act node = node { nodeBefore = Set.insert act (nodeBefore node) }
 
-effects :: Node -> [Pred]
+effects :: Node -> [Effect]
 effects Node { .. } = aEffect nodeInst
 
 
@@ -218,8 +220,8 @@ instance Zonk Node where
 
 instance Zonk Goal where
   zonk' Goal { .. } = Goal <$> zonk' gSource
-                           <*> zonk' gPred
+                           <*> zonk' gGoal
                            <*> zonk' gEffects
 
 instance PP Goal where
-  pp Goal { .. } = pp gPred <+> text "from" <+> pp gSource
+  pp Goal { .. } = pp gGoal <+> text "from" <+> pp gSource

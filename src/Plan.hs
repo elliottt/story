@@ -144,7 +144,7 @@ solveGoal g =
   do (s_add,gs) <- msum [ byAssumption g, byNewStep g ]
 
      updatePlan_ ( (s_add `isBefore` gSource g)
-                 . addLink (Link s_add (gPred g) (gSource g)) )
+                 . addLink (Link s_add (gGoal g) (gSource g)) )
 
      return Flaws { fOpenConditions = gs }
 
@@ -155,7 +155,7 @@ byAssumption Goal { .. } =
      msum (map tryAssump candidates)
   where
   tryAssump (act,node) =
-    do msum [ unify gPred q | q <- effects node ]
+    do msum [ unify gGoal q | EPred q <- effects node ]
        return (act, [])
 
 
@@ -166,16 +166,17 @@ byNewStep Goal { .. } =
   where
   tryInst s =
     do (act,op) <- freshInst s
-       msum [ match q gPred | q <- aEffect op ]
+       msum [ match q gGoal | EPred q <- aEffect op ]
 
        gs <- updatePlan (addAction act op)
        updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
 
        return (act,gs)
 
+-- | Discover causal threats in the plan.
+causalThreats :: PlanM [(Step,Link)]
+causalThreats  =
 
-resolveThreats :: PlanM ()
-resolveThreats  =
   do as    <- fromPlan getActions
      links <- fromPlan getLinks
      bs    <- getBinds
@@ -187,11 +188,17 @@ resolveThreats  =
          isThreatened act es (Link l p r) =
            l /= act &&
            r /= act &&
-           any (unifies (predNegate p)) es
+           any (unifies (EPred (negPred p))) es
 
          threats = [ (act,link) | (act,node) <- as
                                 , link       <- Set.toList links
                                 , isThreatened act (effects node) link ]
+
+     return threats
+
+resolveThreats :: PlanM ()
+resolveThreats  =
+  do threats <- causalThreats
 
      unless (null threats) $
        do forM_ threats $ \ (act,Link l _ r) ->
@@ -208,34 +215,34 @@ resolveThreats  =
 buy :: Schema Action
 buy  = forall ["x", "store"] $ \ [x,store] ->
   emptyAction { aName    = "Buy"
-              , aPrecond = [ PFormula $ Formula True "At"    [store]
-                           , PFormula $ Formula True "Sells" [store,x] ]
-              , aEffect  = [ PFormula $ Formula True "Have"  [x] ]
+              , aPrecond = [ Pred True "At"    [store]
+                           , Pred True "Sells" [store,x] ]
+              , aEffect  = [ EPred $ Pred True "Have"  [x] ]
               }
 
 go :: Schema Action
 go  = forall ["x", "y"] $ \ [x,y] ->
   emptyAction { aName    = "Go"
-              , aPrecond = [ PFormula $ Formula True  "At" [x] ]
-              , aEffect  = [ PFormula $ Formula True  "At" [y]
-                           , PFormula $ Formula False "At" [x] ]
+              , aPrecond = [ Pred True  "At" [x] ]
+              , aEffect  = [ EPred $ Pred True  "At" [y]
+                           , EPred $ Pred False "At" [x] ]
               }
 
 testDomain :: Domain
 testDomain  = [buy,go]
 
 testAssumps :: Assumps
-testAssumps  = [ PFormula $ Formula True "At"    ["Home"]
-               , PFormula $ Formula True "Sells" ["SM","Milk"]
-               , PFormula $ Formula True "Sells" ["SM","Banana"]
-               , PFormula $ Formula True "Sells" ["HW","Drill"]
+testAssumps  = [ Pred True "At"    ["Home"]
+               , Pred True "Sells" ["SM","Milk"]
+               , Pred True "Sells" ["SM","Banana"]
+               , Pred True "Sells" ["HW","Drill"]
                ]
 
 testGoals :: Goals
-testGoals  = [ PFormula $ Formula True "Have" ["Milk"]
-             , PFormula $ Formula True "At" ["Home"]
-             , PFormula $ Formula True "Have" ["Banana"]
-             , PFormula $ Formula True "Have" ["Drill"]
+testGoals  = [ Pred True "Have" ["Milk"]
+             , Pred True "At" ["Home"]
+             , Pred True "Have" ["Banana"]
+             , Pred True "Have" ["Drill"]
              ]
 
 -- testDomain =

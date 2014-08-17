@@ -119,14 +119,14 @@ instance Zonk Action where
        aEffect      <- zonk' qs
        return Action { .. }
 
-instance Zonk Pred where
-  zonk' (PFormula p)     = PFormula `fmap` zonk' p
-  zonk' (PIntends who p) = PIntends `fmap` zonk' who `ap` zonk' p
+instance Zonk Effect where
+  zonk' (EPred p)        = EPred    `fmap` zonk' p
+  zonk' (EIntends who p) = EIntends `fmap` zonk' who `ap` zonk' p
 
-instance Zonk Formula where
-  zonk' (Formula fNeg fSym ts) =
-    do fArgs <- zonk' ts
-       return Formula { .. }
+instance Zonk Pred where
+  zonk' (Pred pNeg pSym ts) =
+    do pArgs <- zonk' ts
+       return Pred { .. }
 
 instance Zonk Term where
   zonk' tm = case tm of
@@ -164,26 +164,26 @@ instance (Unify a, Unify b) => Unify (a,b) where
   match' (a,b) (c,d) = do match' a c
                           match' b d
 
-instance Unify Pred where
-  mgu' (PFormula p)     (PFormula q)       = mgu' p q
-  mgu' (PIntends who p) (PIntends who' p') = do mgu' who who'
+instance Unify Effect where
+  mgu' (EPred p)        (EPred q)          = mgu' p q
+  mgu' (EIntends who p) (EIntends who' p') = do mgu' who who'
                                                 mgu' p   p'
   mgu' _                _                  = raise UnificationFailed
 
-  match' (PFormula p)     (PFormula q)       = match' p q
-  match' (PIntends who p) (PIntends who' p') = do match' who who'
+  match' (EPred p)        (EPred q)          = match' p q
+  match' (EIntends who p) (EIntends who' p') = do match' who who'
                                                   match' p   p'
   match' _                _                  = raise MatchingFailed
 
-instance Unify Formula where
-  mgu' (Formula n1 p1 args1) (Formula n2 p2 args2)
+instance Unify Pred where
+  mgu' (Pred n1 p1 args1) (Pred n2 p2 args2)
     | n1 == n2 && p1 == p2 =
       mgu' args1 args2
 
     | otherwise =
       raise UnificationFailed
 
-  match' (Formula n1 p1 args1) (Formula n2 p2 args2)
+  match' (Pred n1 p1 args1) (Pred n2 p2 args2)
     | n1 == n2 && p1 == p2 =
       match' args1 args2
 
