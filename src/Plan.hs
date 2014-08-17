@@ -1,291 +1,227 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Plan where
+module Plan (
+    -- * Partial Plans
+    Plan()
+  , initialPlan
+  , addAction
+  , zonkPlan
+  , getActions
+  , planConsistent
 
-import           Pretty
-import           PlanState
-import           Types
-import qualified Unify
+    -- ** Variable Bindings
+  , getBindings
+  , setBindings
 
-import           Control.Applicative
-import           Data.Foldable ( forM_ )
-import           Data.Monoid ( mappend )
+    -- ** Ordering Constraints
+  , isBefore
+  , orderedActions
+
+    -- ** Causal Links
+  , addLink
+  , getLinks
+
+    -- ** Graph Nodes
+  , Node()
+  , effects
+
+    -- * Goals
+  , Goal(..)
+  , Flaws(..), noFlaws, nextOpenCondition
+  ) where
+
+import FloydWarshall ( transitiveClosure )
+import Pretty
+import Unify ( Error, Env, Zonk(..), zonk )
+import Types
+
+import           Control.Applicative ( (<$>), (<*>) )
+import           Control.Monad ( MonadPlus(..) )
+import           Data.Array.IArray ( (!) )
+import           Data.Function ( on )
+import qualified Data.Graph as Graph
+import qualified Data.Graph.SCC as SCC
+import           Data.List ( sortBy )
+import qualified Data.Map.Strict as Map
+import           Data.Monoid ( Monoid(..) )
 import qualified Data.Set as Set
-import           MonadLib hiding ( forM_ )
-
-import           Debug.Trace
 
 
-pop :: Domain -> Assumps -> Goals -> Maybe [Step]
-pop d as gs = runPlanM d p $
-  do solveGoals Flaws { fOpenConditions = goals }
-     zonk =<< fromPlan orderedActions
+-- Types -----------------------------------------------------------------------
+
+data Plan = Plan { pBindings :: Env
+                   -- ^ Current set of variable bindings
+                 , pNodes    :: Map.Map Step Node
+                   -- ^ Instantiated actions, and their dependencies
+                 , pLinks    :: Set.Set Link
+                   -- ^ Causal links
+                 } deriving (Show)
+
+data Node = Node { nodeInst     :: Action
+                   -- ^ The instantiated operator
+                 , nodeBefore   :: Set.Set Step
+                   -- ^ Nodes that come before this one in the graph
+                 , nodeAfter    :: Set.Set Step
+                   -- ^ Nodes that come after this one in the graph
+                 } deriving (Show)
+
+-- | An open condition flaw.
+data Goal = Goal { gSource  :: Step
+                 , gGoal    :: Pred
+                 , gEffects :: [Effect]
+                 } deriving (Show,Eq,Ord)
+
+data Flaws = Flaws { fOpenConditions :: [Goal]
+                   } deriving (Show)
+
+instance Monoid Flaws where
+  mempty      = Flaws { fOpenConditions = [] }
+  mappend l r = Flaws { fOpenConditions = merge fOpenConditions
+                      }
+    where
+    merge p = (mappend `on` p) l r
+
+noFlaws :: Flaws -> Bool
+noFlaws Flaws { .. } = null fOpenConditions
+
+nextOpenCondition :: MonadPlus m => Flaws -> m (Goal,Flaws)
+nextOpenCondition flaws =
+  case fOpenConditions flaws of
+    g:gs -> return (g, flaws { fOpenConditions = gs })
+    _    -> mzero
+
+
+-- PlanState Operations --------------------------------------------------------
+
+zonkPlan :: Plan -> Either Error Plan
+zonkPlan plan = case zonk (pBindings plan) (pNodes plan) of
+  Right nodes' -> Right plan { pNodes = nodes' }
+  Left err     -> Left err
+
+planConsistent :: Plan -> Bool
+planConsistent  = ordsConsistent
+
+-- | Form a plan state from an initial set of assumptions, and goals.
+initialPlan :: Assumps -> Goals -> (Plan,[Goal])
+initialPlan as gs = ((Start `isBefore` Finish) psFinish, goals)
   where
-  (p,goals) = initialPlan as gs
+  emptyPlan        = Plan { pBindings = Map.empty
+                          , pNodes    = Map.empty
+                          , pLinks    = Set.empty
+                          }
+
+  (psStart,_)      = addAction Start emptyAction { aName   = "<Start>"
+                                                 , aEffect = map EPred as
+                                                 } emptyPlan
+
+  (psFinish,goals) = addAction Finish emptyAction { aName     = "<Finish>"
+                                                  , aPrecond  = gs
+                                                  } psStart
+-- | Retrieve variable bindings from the plan.
+getBindings :: Plan -> Env
+getBindings  = pBindings
+
+-- | Set variable bindings in the plan.
+setBindings :: Env -> Plan -> Plan
+setBindings env p = p { pBindings = env }
 
 
--- Planning Monad --------------------------------------------------------------
+getActions :: Plan -> [(Step,Node)]
+getActions Plan { .. } = Map.toList pNodes
 
-newtype PlanM a = PlanM { unPlanM :: StateT RW (ChoiceT Id) a
-                        } deriving (Functor,Applicative,Monad,Alternative
-                                   ,MonadPlus)
+-- | Modify an existing action.
+modifyAction :: Step -> (Node -> Node) -> (Plan -> Plan)
+modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 
-data RW = RW { rwFresh  :: Int
-             , rwDomain :: Domain
-             , rwPlan   :: Plan
-             } deriving (Show)
-
-runPlanM :: Domain -> Plan -> PlanM a -> Maybe a
-runPlanM d p m =
-  case runId (findOne (runStateT rw (unPlanM m))) of
-    Just (a,_) -> Just a
-    Nothing    -> Nothing
+-- | Add an action, with its instantiation, to the plan state.  All
+-- preconditions of the action will be considered goals, and appended to the
+-- agenda.
+addAction :: Step -> Action -> Plan -> (Plan,[Goal])
+addAction act oper p = (p',newGoals)
   where
-  rw = RW { rwFresh  = 0
-          , rwDomain = d
-          , rwPlan   = p
-          }
+  p' = p { pNodes = Map.insert act Node { nodeInst     = oper
+                                        , nodeBefore   = Set.empty
+                                        , nodeAfter    = Set.empty
+                                        } (pNodes p) }
+  newGoals = [ Goal act tm (aEffect oper) | tm <- aPrecond oper ]
 
+-- | Record that action a comes before action b, in the plan state.
+isBefore :: Step -> Step -> Plan -> Plan
+a `isBefore` b = modifyAction b (addBefore a)
+               . modifyAction a (addAfter  b)
 
-fromPlan :: (Plan -> a) -> PlanM a
-fromPlan f = PlanM (f . rwPlan <$> get)
+addLink :: Link -> Plan -> Plan
+addLink l p = p { pLinks = Set.insert l (pLinks p) }
 
-updatePlan_ :: (Plan -> Plan) -> PlanM ()
-updatePlan_ f = PlanM $ do rw <- get
-                           set $! rw { rwPlan = f (rwPlan rw) }
+getLinks :: Plan -> Set.Set Link
+getLinks  = pLinks
 
-updatePlan :: (Plan -> (Plan,a)) -> PlanM a
-updatePlan f = PlanM $ do rw <- get
-                          let (p',a) = f (rwPlan rw)
-                          set $! rw { rwPlan = p' }
-                          return a
-
-getBinds :: PlanM Unify.Env
-getBinds  = fromPlan getBindings
-
-setBinds :: Unify.Env -> PlanM ()
-setBinds bs = PlanM $ do rw <- get
-                         set rw { rwPlan = setBindings bs (rwPlan rw) }
-
-nextId :: PlanM Int
-nextId  = PlanM $ do rw <- get
-                     set rw { rwFresh = rwFresh rw + 1 }
-                     return (rwFresh rw)
-
-fresh :: Var -> PlanM Term
-fresh v = do ix <- nextId
-             return (TVar v { varIndex = ix })
-
-freshInst :: Schema Action -> PlanM (Step,Action)
-freshInst (Forall vs a) =
-  do ts <- mapM fresh vs
-     ix <- nextId
-     let oper = inst ts a
-     return (Inst ix (aName oper) ts, oper)
-
-getDomain :: PlanM Domain
-getDomain  = PlanM (rwDomain <$> get)
-
--- XXX extending the binding environment might invalidate the causal links.
--- What's the best way to detect this?
-match :: Unify.Unify tm => tm -> tm -> PlanM ()
-match l r =
-  do bs <- getBinds
-     case Unify.match bs l r of
-       Right bs' -> setBinds bs'
-       Left _    -> mzero
-
-unify :: (Unify.Unify tm, PP tm) => tm -> tm -> PlanM ()
-unify l r =
-  do bs <- getBinds
-     case Unify.mgu bs l r of
-       Right bs' -> setBinds bs'
-       Left _    -> mzero
-
-zonk :: Unify.Zonk tm => tm -> PlanM tm
-zonk tm =
-  do bs <- getBinds
-     case Unify.zonk bs tm of
-       Right tm' -> return tm'
-       Left _    -> mzero
-
-dbg :: Show a => String -> a -> PlanM ()
-dbg l a = traceM (l ++ ": " ++ show a)
-
-zonkDbg :: (PP a, Unify.Zonk a) => String -> a -> PlanM ()
-zonkDbg l a = do a' <- zonk a
-                 traceM (show (hang (text l <> char ':') 2 (pp a')))
-
-
--- Planner ---------------------------------------------------------------------
-
--- | Solve a series of goals.
-solveGoals :: Flaws -> PlanM ()
-solveGoals flaws
-  | noFlaws flaws =
-    return ()
-
-  | otherwise =
-    do (g,flaws') <- nextOpenCondition flaws
-
-       newFlaws <- solveGoal g
-
-       resolveThreats
-
-       guard =<< fromPlan planConsistent
-
-       solveGoals (flaws' `mappend` newFlaws)
-
-
-solveGoal :: Goal -> PlanM Flaws
-solveGoal g =
-  do (s_add,gs) <- msum [ byAssumption g, byNewStep g ]
-
-     updatePlan_ ( (s_add `isBefore` gSource g)
-                 . addLink (Link s_add (gGoal g) (gSource g)) )
-
-     return Flaws { fOpenConditions = gs }
-
-
-byAssumption :: Goal -> PlanM (Step,[Goal])
-byAssumption Goal { .. } =
-  do candidates <- fromPlan getActions
-     msum (map tryAssump candidates)
+-- | Check that there are no cycles in the graph.
+ordsConsistent :: Plan -> Bool
+ordsConsistent ps = all isAcyclic (scc ps)
   where
-  tryAssump (act,node) =
-    do msum [ unify gGoal q | EPred q <- effects node ]
-       return (act, [])
+  isAcyclic Graph.AcyclicSCC{} = True
+  isAcyclic _                  = False
 
+scc :: Plan -> [Graph.SCC (Step,Node)]
+scc Plan { .. } = SCC.stronglyConnComp
+  [ ((key,node), key, es) | (key,node) <- Map.toList pNodes
+                          , let es = Set.toList (nodeAfter node) ]
 
-byNewStep :: Goal -> PlanM (Step,[Goal])
-byNewStep Goal { .. } =
-  do dom <- getDomain
-     msum (map tryInst dom)
+-- | Turn the plan state into a graph, and create a function for recovering
+-- information about the actions in the plan.
+actionGraph :: Plan
+            -> (Node -> Set.Set Step)
+            -> ( Graph.Graph
+               , Graph.Vertex -> (Step,Node)
+               , Step -> Maybe Graph.Vertex )
+actionGraph Plan { .. } prj = (graph, getAction, toVertex)
   where
-  tryInst s =
-    do (act,op) <- freshInst s
-       msum [ match q gGoal | EPred q <- aEffect op ]
+  (graph, fromVertex, toVertex) = Graph.graphFromEdges
+    [ ((key,node), key, es) | (key,node) <- Map.toList pNodes
+                            , let es = Set.toList (prj node) ]
 
-       gs <- updatePlan (addAction act op)
-       updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
+  getAction v = case fromVertex v of
+                  (x,_,_) -> x
 
-       return (act,gs)
+-- | Produce a linear plan from a plan state.
+orderedActions :: Plan -> [Step]
+orderedActions ps = [ act | vert <- sorted
+                          , let (act,_) = fromVertex vert ]
+  where
+  (graph,fromVertex,_) = actionGraph ps nodeAfter
 
--- | Discover causal threats in the plan.
-causalThreats :: PlanM [(Step,Link)]
-causalThreats  =
+  relation                      = transitiveClosure graph
+  ordRel a b | a == b           = EQ
+             | relation ! (a,b) = LT
+             | otherwise        = GT
 
-  do as    <- fromPlan getActions
-     links <- fromPlan getLinks
-     bs    <- getBinds
-
-     let unifies p q = case Unify.mgu bs p q of
-                         Right {} -> True
-                         Left {}  -> False
-
-         isThreatened act es (Link l p r) =
-           l /= act &&
-           r /= act &&
-           any (unifies (EPred (negPred p))) es
-
-         threats = [ (act,link) | (act,node) <- as
-                                , link       <- Set.toList links
-                                , isThreatened act (effects node) link ]
-
-     return threats
-
-resolveThreats :: PlanM ()
-resolveThreats  =
-  do threats <- causalThreats
-
-     unless (null threats) $
-       do forM_ threats $ \ (act,Link l _ r) ->
-            do f <- msum [ do guard (r /= Finish)
-                              return (r `isBefore` act)
-                         , do guard (l /= Start)
-                              return (act `isBefore` l)
-                         ]
-               updatePlan_ f
+  sorted               = sortBy ordRel (Graph.vertices graph)
 
 
--- Testing ---------------------------------------------------------------------
+-- Node Operations -------------------------------------------------------------
 
-buy :: Schema Action
-buy  = forall ["x", "store"] $ \ [x,store] ->
-  emptyAction { aName    = "Buy"
-              , aPrecond = [ Pred True "At"    [store]
-                           , Pred True "Sells" [store,x] ]
-              , aEffect  = [ EPred $ Pred True "Have"  [x] ]
-              }
+addAfter :: Step -> Node -> Node
+addAfter act node = node { nodeAfter = Set.insert act (nodeAfter node) }
 
-go :: Schema Action
-go  = forall ["x", "y"] $ \ [x,y] ->
-  emptyAction { aName    = "Go"
-              , aPrecond = [ Pred True  "At" [x] ]
-              , aEffect  = [ EPred $ Pred True  "At" [y]
-                           , EPred $ Pred False "At" [x] ]
-              }
+addBefore :: Step -> Node -> Node
+addBefore act node = node { nodeBefore = Set.insert act (nodeBefore node) }
 
-testDomain :: Domain
-testDomain  = [buy,go]
-
-testAssumps :: Assumps
-testAssumps  = [ Pred True "At"    ["Home"]
-               , Pred True "Sells" ["SM","Milk"]
-               , Pred True "Sells" ["SM","Banana"]
-               , Pred True "Sells" ["HW","Drill"]
-               ]
-
-testGoals :: Goals
-testGoals  = [ Pred True "Have" ["Milk"]
-             , Pred True "At" ["Home"]
-             , Pred True "Have" ["Banana"]
-             , Pred True "Have" ["Drill"]
-             ]
-
--- testDomain =
---   [ forall [] $ \ [] ->
---     Operator { oName     = "RemoveSpareFromTrunk"
---              , oPrecond  = [ Pred True "At" ["Spare", "Trunk"] ]
---              , oPostcond = [ Pred True "At" ["Spare", "Ground"]
---                            , Pred False "At" ["Spare", "Trunk"] ]
---              }
---   , forall [] $ \ [] ->
---     Operator { oName     = "RemoveFlatFromAxel"
---              , oPrecond  = [ Pred True "At" ["Flat", "Axle"] ]
---              , oPostcond = [ Pred True "At" ["Flat", "Ground"]
---                            , Pred False "At" ["Flat", "Axle"] ]
---              }
--- 
---   , forall [] $ \ [] ->
---     Operator { oName     = "PutSpareOnAxle"
---              , oPrecond  = [ Pred True  "At" ["Spare", "Ground"]
---                            , Pred False "At" ["Flat", "Axle"] ]
---              , oPostcond = [ Pred True  "At" ["Spare", "Axle"]
---                            , Pred False "At" ["Spare", "Ground"] ]
---              }
---   , forall [] $ \ [] ->
---     Operator { oName = "LeaveOvernight"
---              , oPrecond = []
---              , oPostcond = [ Pred False "At" ["Spare", "Ground"]
---                            , Pred False "At" ["Spare", "Axle"]
---                            , Pred False "At" ["Spare", "Trunk"]
---                            , Pred False "At" ["Flat", "Ground"]
---                            , Pred False "At" ["Flat", "Axle"] ]
---              }
---   ]
--- 
--- testAssumps = [ Pred True "At" ["Flat", "Axle"]
---               , Pred True "At" ["Spare", "Trunk"] ]
--- 
--- testGoals = [ Pred True "At" ["Spare", "Axle"] ]
-
-test :: IO ()
-test = case pop testDomain testAssumps testGoals of
-  Just plan -> mapM_ (print . pp) plan
-  Nothing   -> putStrLn "No plan"
+effects :: Node -> [Effect]
+effects Node { .. } = aEffect nodeInst
 
 
--- -----------------------------------------------------------------------------
+-- Utility Instances -----------------------------------------------------------
+
+instance Zonk Node where
+  zonk' Node { .. } = Node <$> zonk' nodeInst
+                           <*> zonk' nodeBefore
+                           <*> zonk' nodeAfter
+
+instance Zonk Goal where
+  zonk' Goal { .. } = Goal <$> zonk' gSource
+                           <*> zonk' gGoal
+                           <*> zonk' gEffects
+
+instance PP Goal where
+  pp Goal { .. } = pp gGoal <+> text "from" <+> pp gSource
