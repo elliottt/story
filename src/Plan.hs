@@ -102,8 +102,8 @@ planConsistent :: Plan -> Bool
 planConsistent  = ordsConsistent
 
 -- | Form a plan state from an initial set of assumptions, and goals.
-initialPlan :: Assumps -> Goals -> (Plan,[Goal])
-initialPlan as gs = ((Start `isBefore` Finish) psFinish, goals)
+initialPlan :: Assumps -> Goals -> (Plan,Flaws)
+initialPlan as gs = ((Start `isBefore` Finish) psFinish, flaws)
   where
   emptyPlan        = Plan { pBindings = Map.empty
                           , pNodes    = Map.empty
@@ -117,6 +117,9 @@ initialPlan as gs = ((Start `isBefore` Finish) psFinish, goals)
   (psFinish,goals) = addAction Finish emptyAction { aName     = "<Finish>"
                                                   , aPrecond  = gs
                                                   } psStart
+
+  flaws            = Flaws { fOpenConditions = goals }
+
 -- | Retrieve variable bindings from the plan.
 getBindings :: Plan -> Env
 getBindings  = pBindings

@@ -20,10 +20,10 @@ import           Debug.Trace
 
 ipocl :: Domain -> Assumps -> Goals -> Maybe [Step]
 ipocl d as gs = runPlanM d p $
-  do solveGoals Flaws { fOpenConditions = goals }
+  do solveGoals flaws
      zonk =<< fromPlan orderedActions
   where
-  (p,goals) = initialPlan as gs
+  (p,flaws) = initialPlan as gs
 
 
 -- Planning Monad --------------------------------------------------------------
