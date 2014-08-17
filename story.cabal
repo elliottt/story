@@ -9,7 +9,12 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Types, Unify, Plan
+  exposed-modules:     Types,
+                       Unify,
+                       Plan,
+                       IPOCL,
+                       FloydWarshall,
+                       Pretty
   build-depends:       base >=4.6 && <5,
                        containers >=0.5,
                        monadLib >=3.7,
