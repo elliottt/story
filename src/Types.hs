@@ -124,7 +124,7 @@ data Link = Link { clLeft  :: Step
 -- | Frames of commitment.
 data Frame = Frame { fSteps :: Set.Set Step
                    , fActor :: Actor
-                   , fGoal  :: Term
+                   , fGoal  :: Pred
                    , fFinal :: Step
                    } deriving (Show,Eq,Ord)
 

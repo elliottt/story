@@ -11,8 +11,9 @@ import qualified Unify
 
 import           Control.Applicative
 import           Data.Foldable ( forM_ )
-import           Data.Monoid ( mappend )
+import           Data.Monoid ( mempty, mappend )
 import qualified Data.Set as Set
+import qualified Data.Traversable as T
 import           MonadLib hiding ( forM_ )
 
 import           Debug.Trace
@@ -88,6 +89,13 @@ freshInst (Forall vs a) =
 getDomain :: PlanM Domain
 getDomain  = PlanM (rwDomain <$> get)
 
+getNode :: Step -> PlanM Node
+getNode step =
+  do mb <- fromPlan (getAction step)
+     case mb of
+       Just node -> return node
+       Nothing   -> mzero
+
 -- XXX extending the binding environment might invalidate the causal links.
 -- What's the best way to detect this?
 match :: Unify.Unify tm => tm -> tm -> PlanM ()
@@ -128,38 +136,98 @@ solveGoals flaws
     return ()
 
   | otherwise =
-    do (g,flaws') <- nextOpenCondition flaws
-
-       newFlaws <- solveGoal g
-
-       resolveThreats
+    do flaws' <- msum [ discoveryAndResolution (causalPlanning flaws)
+                      ]
 
        guard =<< fromPlan planConsistent
 
-       solveGoals (flaws' `mappend` newFlaws)
+       solveGoals flaws'
+
+discoveryAndResolution :: PlanM (Bool,Step,Flaws) -> PlanM Flaws
+discoveryAndResolution body =
+  do (isNew,s_add,flaws) <- body
+
+     frameFlaws <- if isNew
+                      then discoverFrameFlaws s_add
+                      else discoverIntentFlaws s_add
+
+     resolveCausalThreats
+
+     return (flaws `mappend` frameFlaws)
 
 
-solveGoal :: Goal -> PlanM Flaws
+-- | Given a step that is new to the plan, derive frames of commitment for each
+-- goal, and yield motivation flaws.
+discoverFrameFlaws :: Step -> PlanM Flaws
+discoverFrameFlaws s_add = discoverEffectFrame `mplus` noFrame
+  where
+  discoverEffectFrame =
+    do node <- getNode s_add
+       let Action { .. } = action node
+       guard (not (null aActors))
+       msum [ tryEffectFrame aActors p | EPred p <- aEffect ]
+
+  tryEffectFrame actors p =
+    do refs <- updatePlan (addFrames (map mkFrame actors))
+       return mempty { fMotivationFlaws = map MotivationFlaw refs }
+    where
+    mkFrame a = Frame { fSteps = Set.empty
+                      , fActor = a
+                      , fGoal  = p
+                      , fFinal = s_add
+                      }
+
+  addFrames frames plan = T.mapAccumL (flip addFrame) plan frames
+
+  noFrame = return mempty
+
+
+-- XXX
+-- | Find all frames of commitment that could be used to explain s_add, and for
+-- each one, emit an intent flaw.
+discoverIntentFlaws :: Step -> PlanM Flaws
+discoverIntentFlaws s_add = return mempty
+
+
+-- Causal Planning -------------------------------------------------------------
+
+causalPlanning :: Flaws -> PlanM (Bool,Step,Flaws)
+causalPlanning flaws =
+  do (g,flaws') <- nextOpenCondition flaws
+
+     (isNew,s_add,newFlaws) <- solveGoal g
+
+     return (isNew,s_add,flaws' `mappend` newFlaws)
+
+
+solveGoal :: Goal -> PlanM (Bool,Step,Flaws)
 solveGoal g =
-  do (s_add,gs) <- msum [ byAssumption g, byNewStep g ]
+  do (isNew,(s_add,flaws)) <- msum [ do res <- byAssumption g
+                                        return (False,(res,mempty))
+
+                                   , do res <- byNewStep g
+                                        return (True,res)
+                                   ]
 
      updatePlan_ ( (s_add `isBefore` gSource g)
                  . addLink (Link s_add (gGoal g) (gSource g)) )
 
-     return Flaws { fOpenConditions = gs }
+     return (isNew,s_add,flaws)
 
 
-byAssumption :: Goal -> PlanM (Step,[Goal])
+-- | Resolve an open condition by reusing an exising step in the plan.
+byAssumption :: Goal -> PlanM Step
 byAssumption Goal { .. } =
   do candidates <- fromPlan getActions
      msum (map tryAssump candidates)
   where
   tryAssump (act,node) =
     do msum [ unify gGoal q | EPred q <- effects node ]
-       return (act, [])
+       return act
 
 
-byNewStep :: Goal -> PlanM (Step,[Goal])
+-- | Resolve an open condition by adding a new step to the plan.
+byNewStep :: Goal -> PlanM (Step,Flaws)
 byNewStep Goal { .. } =
   do dom <- getDomain
      msum (map tryInst dom)
@@ -168,15 +236,14 @@ byNewStep Goal { .. } =
     do (act,op) <- freshInst s
        msum [ match q gGoal | EPred q <- aEffect op ]
 
-       gs <- updatePlan (addAction act op)
+       flaws <- updatePlan (addAction act op)
        updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
 
-       return (act,gs)
+       return (act,flaws)
 
 -- | Discover causal threats in the plan.
 causalThreats :: PlanM [(Step,Link)]
 causalThreats  =
-
   do as    <- fromPlan getActions
      links <- fromPlan getLinks
      bs    <- getBinds
@@ -196,8 +263,8 @@ causalThreats  =
 
      return threats
 
-resolveThreats :: PlanM ()
-resolveThreats  =
+resolveCausalThreats :: PlanM ()
+resolveCausalThreats  =
   do threats <- causalThreats
 
      unless (null threats) $

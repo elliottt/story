@@ -6,8 +6,11 @@ module Plan (
   , initialPlan
   , addAction
   , zonkPlan
-  , getActions
+  , getActions, getAction
   , planConsistent
+
+  , FrameRef
+  , addFrame
 
     -- ** Variable Bindings
   , getBindings
@@ -24,9 +27,11 @@ module Plan (
     -- ** Graph Nodes
   , Node()
   , effects
+  , action
 
     -- * Goals
   , Goal(..)
+  , MotivationFlaw(..)
   , Flaws(..), noFlaws, nextOpenCondition
   ) where
 
@@ -49,13 +54,15 @@ import qualified Data.Set as Set
 
 -- Types -----------------------------------------------------------------------
 
+type FrameRef = Int
+
 data Plan = Plan { pBindings :: Env
                    -- ^ Current set of variable bindings
                  , pNodes    :: Map.Map Step Node
                    -- ^ Instantiated actions, and their dependencies
                  , pLinks    :: Set.Set Link
                    -- ^ Causal links
-                 , pFrames   :: Set.Set Frame
+                 , pFrames   :: Map.Map FrameRef Frame
                    -- ^ Frames of commitment
                  } deriving (Show)
 
@@ -70,15 +77,21 @@ data Node = Node { nodeInst     :: Action
 -- | An open condition flaw.
 data Goal = Goal { gSource  :: Step
                  , gGoal    :: Pred
-                 , gEffects :: [Effect]
                  } deriving (Show,Eq,Ord)
 
+data MotivationFlaw = MotivationFlaw FrameRef
+                      deriving (Show,Eq,Ord)
+
 data Flaws = Flaws { fOpenConditions :: [Goal]
+                   , fMotivationFlaws :: [MotivationFlaw]
                    } deriving (Show)
 
 instance Monoid Flaws where
-  mempty      = Flaws { fOpenConditions = [] }
-  mappend l r = Flaws { fOpenConditions = merge fOpenConditions
+  mempty      = Flaws { fOpenConditions  = []
+                      , fMotivationFlaws = []
+                      }
+  mappend l r = Flaws { fOpenConditions  = merge fOpenConditions
+                      , fMotivationFlaws = merge fMotivationFlaws
                       }
     where
     merge p = (mappend `on` p) l r
@@ -86,6 +99,7 @@ instance Monoid Flaws where
 noFlaws :: Flaws -> Bool
 noFlaws Flaws { .. } = null fOpenConditions
 
+-- | Remove an open condition from the flaw state, or backtrack if it's empty.
 nextOpenCondition :: MonadPlus m => Flaws -> m (Goal,Flaws)
 nextOpenCondition flaws =
   case fOpenConditions flaws of
@@ -110,18 +124,16 @@ initialPlan as gs = ((Start `isBefore` Finish) psFinish, flaws)
   emptyPlan        = Plan { pBindings = Map.empty
                           , pNodes    = Map.empty
                           , pLinks    = Set.empty
-                          , pFrames   = Set.empty
+                          , pFrames   = Map.empty
                           }
 
   (psStart,_)      = addAction Start emptyAction { aName   = "<Start>"
                                                  , aEffect = map EPred as
                                                  } emptyPlan
 
-  (psFinish,goals) = addAction Finish emptyAction { aName     = "<Finish>"
+  (psFinish,flaws) = addAction Finish emptyAction { aName     = "<Finish>"
                                                   , aPrecond  = gs
                                                   } psStart
-
-  flaws            = Flaws { fOpenConditions = goals }
 
 -- | Retrieve variable bindings from the plan.
 getBindings :: Plan -> Env
@@ -135,6 +147,18 @@ setBindings env p = p { pBindings = env }
 getActions :: Plan -> [(Step,Node)]
 getActions Plan { .. } = Map.toList pNodes
 
+getAction :: Step -> Plan -> Maybe Node
+getAction step Plan { .. } = Map.lookup step pNodes
+
+addFrame :: Frame -> Plan -> (Plan,FrameRef)
+addFrame frame p = (p',key)
+  where
+  key = case Map.maxViewWithKey (pFrames p) of
+          Just ((k,_), _) -> k + 1
+          Nothing         -> 0
+
+  p' = p { pFrames = Map.insert key frame (pFrames p) }
+
 -- | Modify an existing action.
 modifyAction :: Step -> (Node -> Node) -> (Plan -> Plan)
 modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
@@ -142,14 +166,15 @@ modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 -- | Add an action, with its instantiation, to the plan state.  All
 -- preconditions of the action will be considered goals, and appended to the
 -- agenda.
-addAction :: Step -> Action -> Plan -> (Plan,[Goal])
-addAction act oper p = (p',newGoals)
+addAction :: Step -> Action -> Plan -> (Plan,Flaws)
+addAction act oper p = (p',mempty { fOpenConditions = newGoals })
   where
   p' = p { pNodes = Map.insert act Node { nodeInst     = oper
                                         , nodeBefore   = Set.empty
                                         , nodeAfter    = Set.empty
                                         } (pNodes p) }
-  newGoals = [ Goal act tm (aEffect oper) | tm <- aPrecond oper ]
+
+  newGoals = [ Goal act tm | tm <- aPrecond oper ]
 
 -- | Record that action a comes before action b, in the plan state.
 isBefore :: Step -> Step -> Plan -> Plan
@@ -181,14 +206,14 @@ actionGraph :: Plan
             -> ( Graph.Graph
                , Graph.Vertex -> (Step,Node)
                , Step -> Maybe Graph.Vertex )
-actionGraph Plan { .. } prj = (graph, getAction, toVertex)
+actionGraph Plan { .. } prj = (graph, lookupAction, toVertex)
   where
   (graph, fromVertex, toVertex) = Graph.graphFromEdges
     [ ((key,node), key, es) | (key,node) <- Map.toList pNodes
                             , let es = Set.toList (prj node) ]
 
-  getAction v = case fromVertex v of
-                  (x,_,_) -> x
+  lookupAction v = case fromVertex v of
+                     (x,_,_) -> x
 
 -- | Produce a linear plan from a plan state.
 orderedActions :: Plan -> [Step]
@@ -216,6 +241,9 @@ addBefore act node = node { nodeBefore = Set.insert act (nodeBefore node) }
 effects :: Node -> [Effect]
 effects Node { .. } = aEffect nodeInst
 
+action :: Node -> Action
+action Node { .. } = nodeInst
+
 
 -- Utility Instances -----------------------------------------------------------
 
@@ -227,7 +255,6 @@ instance Zonk Node where
 instance Zonk Goal where
   zonk' Goal { .. } = Goal <$> zonk' gSource
                            <*> zonk' gGoal
-                           <*> zonk' gEffects
 
 instance PP Goal where
   pp Goal { .. } = pp gGoal <+> text "from" <+> pp gSource
