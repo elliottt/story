@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ParallelListComp #-}
 
 module IPOCL where
 
@@ -403,47 +404,61 @@ motivationPlanning c @ Frame { .. } =
 
 
 testDomain =
-  [ Forall [monster, char, place]
-  $ Action { aName        = "threaten"
-           , aActors      = [ TGen monster ]
+  [ forall [ "monster", "char", "place" ] $ \ [ monster, char, place ] ->
+    Action { aName        = "threaten"
+           , aActors      = [ monster ]
            , aHappening   = True
-           , aConstraints = [ CPred $ Pred True "monster"   [ TGen monster ]
-                            , CPred $ Pred True "character" [ TGen char    ]
-                            , CPred $ Pred True "place"     [ TGen place   ]
-                            , CNeq (TGen char) (TGen monster)
+           , aConstraints = [ CPred $ Pred True "monster"   [ monster ]
+                            , CPred $ Pred True "character" [ char    ]
+                            , CPred $ Pred True "place"     [ place   ]
+                            , CNeq char monster
                             ]
-           , aPrecond     = [ Pred True "at"    [ TGen monster, TGen place ]
-                            , Pred True "at"    [ TGen char,    TGen place ]
-                            , Pred True "scary" [ TGen monster             ]
+           , aPrecond     = [ Pred True "at"    [ monster, place ]
+                            , Pred True "at"    [ char,    place ]
+                            , Pred True "scary" [ monster        ]
                             ]
-           , aEffect      = [ PIntends (TGen char)
-                                       (Pred False "alive" [ TGen monster ])
+           , aEffect      = [ PIntends char (Pred False "alive" [ monster ])
                             ]
            }
 
-  , Forall [monster, char, place]
-  $ Action { aName        = "slay"
-           , aActors      = [ TGen char ]
+  , forall ["monster", "char", "place"] $ \ [ monster, char, place ] ->
+    Action { aName        = "slay"
+           , aActors      = [ char ]
            , aHappening   = False
-           , aConstraints = [ CPred $ Pred True "monster"   [ TGen monster ]
-                            , CPred $ Pred True "character" [ TGen char    ]
-                            , CPred $ Pred True "place"     [ TGen place   ]
+           , aConstraints = [ CPred $ Pred True "monster"   [ monster ]
+                            , CPred $ Pred True "character" [ char    ]
+                            , CPred $ Pred True "place"     [ place   ]
                             ]
-           , aPrecond     = [ Pred True "at"    [ TGen monster, TGen place ]
-                            , Pred True "at"    [ TGen char,    TGen place ]
-                            , Pred True "scary" [ TGen monster             ]
-                            , Pred True "alive" [ TGen monster             ]
-                            , Pred True "alive" [ TGen char                ]
+           , aPrecond     = [ Pred True "at"    [ monster, place ]
+                            , Pred True "at"    [ char,    place ]
+                            , Pred True "scary" [ monster        ]
+                            , Pred True "alive" [ monster        ]
+                            , Pred True "alive" [ char           ]
                             ]
-           , aEffect      = [ Pred False "alive" [ TGen monster ]
+           , aEffect      = [ Pred False "alive" [ monster ]
+                            ]
+           }
+
+  , forall ["char", "place", "newPlace"] $ \ [char, place, newPlace] ->
+    Action { aName        = "go"
+           , aActors      = [ char ]
+           , aHappening   = False
+           , aConstraints = []
+           , aPrecond     = [ Pred True "at"    [ char, place ]
+                            , Pred True "alive" [ char        ]
+                            ]
+           , aEffect      = [ Pred False "at" [ char, place ]
+                            , Pred True  "at" [ char, newPlace ]
                             ]
            }
   ]
 
   where
-  monster = Var { varDisplay = Just "monster", varIndex = 0 }
-  char    = Var { varDisplay = Just "char",    varIndex = 1 }
-  place   = Var { varDisplay = Just "place",   varIndex = 2 }
+
+  forall ns k = Forall vs (k (map TGen vs))
+    where
+    vs = [ Var { varDisplay = Just n, varIndex = i } | n <- ns
+                                                          | i <- [ 0 .. ] ]
 
 testAssumps =
   [ Pred True "place"     [ "Castle" ]
@@ -465,8 +480,3 @@ test :: IO ()
 test = case ipocl testDomain testAssumps testGoals of
   Just plan -> mapM_ (print . pp) plan
   Nothing   -> putStrLn "No plan"
-
-
-(c1,inten:_) = (Pred {pNeg = True, pSym = "intends", pArgs = [TVar (Var {varDisplay = Just "char", varIndex = 1}),TPred (Pred {pNeg = False, pSym = "alive", pArgs = [TVar (Var {varDisplay = Just "monster", varIndex = 0})]})]},[Pred {pNeg = True, pSym = "intends", pArgs = [TVar (Var {varDisplay = Just "char", varIndex = 5}),TPred (Pred {pNeg = False, pSym = "alive", pArgs = [TGen (Var {varDisplay = Just "monster", varIndex = 0})]})]}])
-
--- -----------------------------------------------------------------------------
