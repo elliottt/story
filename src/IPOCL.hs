@@ -94,7 +94,14 @@ getNode step =
   do mb <- fromPlan (getAction step)
      case mb of
        Just node -> return node
-       Nothing   -> mzero
+       Nothing   -> error ("Invalid Step: " ++ show step)
+
+lookupFrame :: FrameRef -> PlanM Frame
+lookupFrame ref =
+  do mb <- fromPlan (getFrame ref)
+     case mb of
+       Just frame -> return frame
+       Nothing    -> error ("Invalid FrameRef: " ++ show ref)
 
 -- XXX extending the binding environment might invalidate the causal links.
 -- What's the best way to detect this?
@@ -131,17 +138,29 @@ zonkDbg l a = do a' <- zonk a
 
 -- | Solve a series of goals.
 solveGoals :: Flaws -> PlanM ()
-solveGoals flaws
-  | noFlaws flaws =
-    return ()
 
-  | otherwise =
-    do flaws' <- msum [ discoveryAndResolution (causalPlanning flaws)
-                      ]
+solveGoals (FOpenCond g : flaws') =
+  do zonkDbg "Open Condition" g
+     newFlaws <- discoveryAndResolution (causalPlanning g)
+     guard =<< fromPlan planConsistent
+     solveGoals (flaws' ++ newFlaws)
 
-       guard =<< fromPlan planConsistent
+solveGoals (FMotivation ref : flaws') =
+  do frame <- lookupFrame ref
+     zonkDbg "Motivation Flaw" frame
+     newFlaws <- discoveryAndResolution (motivationPlanning frame)
+     guard =<< fromPlan planConsistent
+     solveGoals (flaws' ++ newFlaws)
 
-       solveGoals flaws'
+solveGoals (FIntent step ref : flaws') =
+  do dbg "Intent Flaw" ref
+     undefined
+
+solveGoals [] =
+     return ()
+
+
+-- Threat Resolution -----------------------------------------------------------
 
 discoveryAndResolution :: PlanM (Bool,Step,Flaws) -> PlanM Flaws
 discoveryAndResolution body =
@@ -149,15 +168,23 @@ discoveryAndResolution body =
 
      frameFlaws <- if isNew
                       then discoverFrameFlaws s_add
-                      else discoverIntentFlaws s_add
+                      else return mempty
+
+     intentFlaws <- discoverIntentFlaws s_add
 
      resolveCausalThreats
 
-     return (flaws `mappend` frameFlaws)
+     return (flaws `mappend` frameFlaws `mappend` intentFlaws)
 
 
 -- | Given a step that is new to the plan, derive frames of commitment for each
 -- goal, and yield motivation flaws.
+--
+-- The new motivation flaw represents an opportunity to find a step that
+-- motivates the final step of the new frame of commitment.
+--
+--  * Should intent effects be considered when producing a frame of commitment?
+--
 discoverFrameFlaws :: Step -> PlanM Flaws
 discoverFrameFlaws s_add = discoverEffectFrame `mplus` noFrame
   where
@@ -165,11 +192,11 @@ discoverFrameFlaws s_add = discoverEffectFrame `mplus` noFrame
     do node <- getNode s_add
        let Action { .. } = action node
        guard (not (null aActors))
-       msum [ tryEffectFrame aActors p | EPred p <- aEffect ]
+       msum [ tryEffectFrame aActors p | p <- aEffect ]
 
   tryEffectFrame actors p =
     do refs <- updatePlan (addFrames (map mkFrame actors))
-       return mempty { fMotivationFlaws = map MotivationFlaw refs }
+       return [ FMotivation ref | ref <- refs ]
     where
     mkFrame a = Frame { fSteps = Set.empty
                       , fActor = a
@@ -179,67 +206,36 @@ discoverFrameFlaws s_add = discoverEffectFrame `mplus` noFrame
 
   addFrames frames plan = T.mapAccumL (flip addFrame) plan frames
 
-  noFrame = return mempty
+  noFrame = return []
 
 
--- XXX
 -- | Find all frames of commitment that could be used to explain s_add, and for
 -- each one, emit an intent flaw.
 discoverIntentFlaws :: Step -> PlanM Flaws
-discoverIntentFlaws s_add = return mempty
+discoverIntentFlaws s_add =
+  do -- first, find all frames that have a step that has an effect of s_add as a
+     -- precondition
+     cond1 <- fromPlan (sameIntent s_add)
+
+     -- XXX cond1 only represents half of the picture when generating intent
+     -- flaws
+
+     -- generate intent flaws
+     return [ FIntent s_add ref | ref <- Set.toList cond1 ]
 
 
--- Causal Planning -------------------------------------------------------------
+resolveCausalThreats :: PlanM ()
+resolveCausalThreats  =
+  do threats <- causalThreats
 
-causalPlanning :: Flaws -> PlanM (Bool,Step,Flaws)
-causalPlanning flaws =
-  do (g,flaws') <- nextOpenCondition flaws
-
-     (isNew,s_add,newFlaws) <- solveGoal g
-
-     return (isNew,s_add,flaws' `mappend` newFlaws)
-
-
-solveGoal :: Goal -> PlanM (Bool,Step,Flaws)
-solveGoal g =
-  do (isNew,(s_add,flaws)) <- msum [ do res <- byAssumption g
-                                        return (False,(res,mempty))
-
-                                   , do res <- byNewStep g
-                                        return (True,res)
-                                   ]
-
-     updatePlan_ ( (s_add `isBefore` gSource g)
-                 . addLink (Link s_add (gGoal g) (gSource g)) )
-
-     return (isNew,s_add,flaws)
-
-
--- | Resolve an open condition by reusing an exising step in the plan.
-byAssumption :: Goal -> PlanM Step
-byAssumption Goal { .. } =
-  do candidates <- fromPlan getActions
-     msum (map tryAssump candidates)
-  where
-  tryAssump (act,node) =
-    do msum [ unify gGoal q | EPred q <- effects node ]
-       return act
-
-
--- | Resolve an open condition by adding a new step to the plan.
-byNewStep :: Goal -> PlanM (Step,Flaws)
-byNewStep Goal { .. } =
-  do dom <- getDomain
-     msum (map tryInst dom)
-  where
-  tryInst s =
-    do (act,op) <- freshInst s
-       msum [ match q gGoal | EPred q <- aEffect op ]
-
-       flaws <- updatePlan (addAction act op)
-       updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
-
-       return (act,flaws)
+     unless (null threats) $
+       do forM_ threats $ \ (act,Link l _ r) ->
+            do f <- msum [ do guard (r /= Finish)
+                              return (r `isBefore` act)
+                         , do guard (l /= Start)
+                              return (act `isBefore` l)
+                         ]
+               updatePlan_ f
 
 -- | Discover causal threats in the plan.
 causalThreats :: PlanM [(Step,Link)]
@@ -255,7 +251,7 @@ causalThreats  =
          isThreatened act es (Link l p r) =
            l /= act &&
            r /= act &&
-           any (unifies (EPred (negPred p))) es
+           any (unifies (negPred p)) es
 
          threats = [ (act,link) | (act,node) <- as
                                 , link       <- Set.toList links
@@ -263,54 +259,108 @@ causalThreats  =
 
      return threats
 
-resolveCausalThreats :: PlanM ()
-resolveCausalThreats  =
-  do threats <- causalThreats
 
-     unless (null threats) $
-       do forM_ threats $ \ (act,Link l _ r) ->
-            do f <- msum [ do guard (r /= Finish)
-                              return (r `isBefore` act)
-                         , do guard (l /= Start)
-                              return (act `isBefore` l)
-                         ]
-               updatePlan_ f
+-- Operator Selection ----------------------------------------------------------
+
+operatorSelection :: Pred -> PlanM (Bool,Step,Flaws)
+operatorSelection goal =
+  msum [ do res <- byAssumption goal
+            return (False,res,mempty)
+       , do (s_add,flaws) <- byNewStep goal
+            return (True,s_add,flaws)
+       ]
+
+
+-- | Resolve an open condition by reusing an exising step in the plan.
+byAssumption :: Pred -> PlanM Step
+byAssumption goal =
+  do candidates <- fromPlan getActions
+     msum (map tryAssump candidates)
+  where
+  tryAssump (act,node) =
+    do msum [ unify goal q | q <- effects node ]
+       return act
+
+
+-- | Resolve an open condition by adding a new step to the plan.
+byNewStep :: Pred -> PlanM (Step,Flaws)
+byNewStep goal =
+  do dom <- getDomain
+     msum (map tryInst dom)
+  where
+  tryInst s =
+    do (act,op) <- freshInst s
+       msum [ unify q goal | q <- aEffect op ]
+
+       flaws <- updatePlan (addAction act op)
+       updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
+
+       return (act,flaws)
+
+
+-- Causal Planning -------------------------------------------------------------
+
+causalPlanning :: Goal -> PlanM (Bool,Step,Flaws)
+causalPlanning Goal { .. } =
+  do res@(isNew,s_add,flaws) <- operatorSelection gGoal
+
+     updatePlan_ ( (s_add `isBefore` gSource)
+                 . addLink (Link s_add gGoal gSource) )
+
+     return res
+
+
+-- Motivation Planning ---------------------------------------------------------
+
+-- | A frame of commitment that currently lacks a motivating step.
+motivationPlanning :: Frame -> PlanM (Bool,Step,Flaws)
+motivationPlanning c @ Frame { .. } =
+  do let goal = PIntends fActor fGoal
+
+     res @ (isNew,s_add,flaws) <- operatorSelection goal
+
+     let orderings = [ s_add `isBefore` step | step <- Set.toList (allSteps c) ]
+         link      = Link s_add fGoal fFinal
+
+     updatePlan_ ( foldl (.) (addLink link) orderings )
+
+     return res
 
 
 -- Testing ---------------------------------------------------------------------
 
-buy :: Schema Action
-buy  = forall ["x", "store"] $ \ [x,store] ->
-  emptyAction { aName    = "Buy"
-              , aPrecond = [ Pred True "At"    [store]
-                           , Pred True "Sells" [store,x] ]
-              , aEffect  = [ EPred $ Pred True "Have"  [x] ]
-              }
+-- buy :: Schema Action
+-- buy  = forall ["x", "store"] $ \ [x,store] ->
+--   emptyAction { aName    = "Buy"
+--               , aPrecond = [ Pred True "At"    [store]
+--                            , Pred True "Sells" [store,x] ]
+--               , aEffect  = [ EPred $ Pred True "Have"  [x] ]
+--               }
 
-go :: Schema Action
-go  = forall ["x", "y"] $ \ [x,y] ->
-  emptyAction { aName    = "Go"
-              , aPrecond = [ Pred True  "At" [x] ]
-              , aEffect  = [ EPred $ Pred True  "At" [y]
-                           , EPred $ Pred False "At" [x] ]
-              }
+-- go :: Schema Action
+-- go  = forall ["x", "y"] $ \ [x,y] ->
+--   emptyAction { aName    = "Go"
+--               , aPrecond = [ Pred True  "At" [x] ]
+--               , aEffect  = [ EPred $ Pred True  "At" [y]
+--                            , EPred $ Pred False "At" [x] ]
+--               }
 
-testDomain :: Domain
-testDomain  = [buy,go]
+-- testDomain :: Domain
+-- testDomain  = [buy,go]
 
-testAssumps :: Assumps
-testAssumps  = [ Pred True "At"    ["Home"]
-               , Pred True "Sells" ["SM","Milk"]
-               , Pred True "Sells" ["SM","Banana"]
-               , Pred True "Sells" ["HW","Drill"]
-               ]
+-- testAssumps :: Assumps
+-- testAssumps  = [ Pred True "At"    ["Home"]
+--                , Pred True "Sells" ["SM","Milk"]
+--                , Pred True "Sells" ["SM","Banana"]
+--                , Pred True "Sells" ["HW","Drill"]
+--                ]
 
-testGoals :: Goals
-testGoals  = [ Pred True "Have" ["Milk"]
-             , Pred True "At" ["Home"]
-             , Pred True "Have" ["Banana"]
-             , Pred True "Have" ["Drill"]
-             ]
+-- testGoals :: Goals
+-- testGoals  = [ Pred True "Have" ["Milk"]
+--              , Pred True "At" ["Home"]
+--              , Pred True "Have" ["Banana"]
+--              , Pred True "Have" ["Drill"]
+--              ]
 
 -- testDomain =
 --   [ forall [] $ \ [] ->
@@ -349,10 +399,74 @@ testGoals  = [ Pred True "Have" ["Milk"]
 -- 
 -- testGoals = [ Pred True "At" ["Spare", "Axle"] ]
 
+
+
+
+testDomain =
+  [ Forall [monster, char, place]
+  $ Action { aName        = "threaten"
+           , aActors      = [ TGen monster ]
+           , aHappening   = True
+           , aConstraints = [ CPred $ Pred True "monster"   [ TGen monster ]
+                            , CPred $ Pred True "character" [ TGen char    ]
+                            , CPred $ Pred True "place"     [ TGen place   ]
+                            , CNeq (TGen char) (TGen monster)
+                            ]
+           , aPrecond     = [ Pred True "at"    [ TGen monster, TGen place ]
+                            , Pred True "at"    [ TGen char,    TGen place ]
+                            , Pred True "scary" [ TGen monster             ]
+                            ]
+           , aEffect      = [ PIntends (TGen char)
+                                       (Pred False "alive" [ TGen monster ])
+                            ]
+           }
+
+  , Forall [monster, char, place]
+  $ Action { aName        = "slay"
+           , aActors      = [ TGen char ]
+           , aHappening   = False
+           , aConstraints = [ CPred $ Pred True "monster"   [ TGen monster ]
+                            , CPred $ Pred True "character" [ TGen char    ]
+                            , CPred $ Pred True "place"     [ TGen place   ]
+                            ]
+           , aPrecond     = [ Pred True "at"    [ TGen monster, TGen place ]
+                            , Pred True "at"    [ TGen char,    TGen place ]
+                            , Pred True "scary" [ TGen monster             ]
+                            , Pred True "alive" [ TGen monster             ]
+                            , Pred True "alive" [ TGen char                ]
+                            ]
+           , aEffect      = [ Pred False "alive" [ TGen monster ]
+                            ]
+           }
+  ]
+
+  where
+  monster = Var { varDisplay = Just "monster", varIndex = 0 }
+  char    = Var { varDisplay = Just "char",    varIndex = 1 }
+  place   = Var { varDisplay = Just "place",   varIndex = 2 }
+
+testAssumps =
+  [ Pred True "place"     [ "Castle" ]
+  , Pred True "character" [ "Knight" ]
+  , Pred True "monster"   [ "Dragon" ]
+  , Pred True "alive"     [ "Knight" ]
+  , Pred True "alive"     [ "Dragon" ]
+
+  , Pred True "at"        [ "Knight", "Castle" ]
+  , Pred True "at"        [ "Dragon", "Castle" ]
+  , Pred True "scary"     [ "Dragon" ]
+  ]
+
+testGoals =
+  [ Pred False "alive" [ "Dragon" ]
+  ]
+
 test :: IO ()
 test = case ipocl testDomain testAssumps testGoals of
   Just plan -> mapM_ (print . pp) plan
   Nothing   -> putStrLn "No plan"
 
+
+(c1,inten:_) = (Pred {pNeg = True, pSym = "intends", pArgs = [TVar (Var {varDisplay = Just "char", varIndex = 1}),TPred (Pred {pNeg = False, pSym = "alive", pArgs = [TVar (Var {varDisplay = Just "monster", varIndex = 0})]})]},[Pred {pNeg = True, pSym = "intends", pArgs = [TVar (Var {varDisplay = Just "char", varIndex = 5}),TPred (Pred {pNeg = False, pSym = "alive", pArgs = [TGen (Var {varDisplay = Just "monster", varIndex = 0})]})]}])
 
 -- -----------------------------------------------------------------------------

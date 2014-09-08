@@ -10,6 +10,9 @@ import           Text.PrettyPrint.HughesPJ
 commas :: [Doc] -> Doc
 commas ds = fsep (punctuate (char ',') ds)
 
+angles :: Doc -> Doc
+angles p = char '<' <> p <> char '>'
+
 pretty :: PP a => a -> String
 pretty a = show (pp a)
 

@@ -11,6 +11,8 @@ module Plan (
 
   , FrameRef
   , addFrame
+  , getFrame
+  , sameIntent
 
     -- ** Variable Bindings
   , getBindings
@@ -31,24 +33,23 @@ module Plan (
 
     -- * Goals
   , Goal(..)
-  , MotivationFlaw(..)
-  , Flaws(..), noFlaws, nextOpenCondition
+  , Flaws
+  , Flaw(..)
   ) where
 
 import FloydWarshall ( transitiveClosure )
 import Pretty
-import Unify ( Error, Env, Zonk(..), zonk )
+import Unify ( Error, Env, Zonk(..), zonk, match )
 import Types
 
 import           Control.Applicative ( (<$>), (<*>) )
-import           Control.Monad ( MonadPlus(..) )
 import           Data.Array.IArray ( (!) )
-import           Data.Function ( on )
+import           Data.Either ( isRight )
+import qualified Data.Foldable as F
 import qualified Data.Graph as Graph
 import qualified Data.Graph.SCC as SCC
 import           Data.List ( sortBy )
 import qualified Data.Map.Strict as Map
-import           Data.Monoid ( Monoid(..) )
 import qualified Data.Set as Set
 
 
@@ -71,7 +72,6 @@ data Node = Node { nodeInst     :: Action
                  , nodeBefore   :: Set.Set Step
                    -- ^ Nodes that come before this one in the graph
                  , nodeAfter    :: Set.Set Step
-                   -- ^ Nodes that come after this one in the graph
                  } deriving (Show)
 
 -- | An open condition flaw.
@@ -79,32 +79,12 @@ data Goal = Goal { gSource  :: Step
                  , gGoal    :: Pred
                  } deriving (Show,Eq,Ord)
 
-data MotivationFlaw = MotivationFlaw FrameRef
-                      deriving (Show,Eq,Ord)
+type Flaws = [Flaw]
 
-data Flaws = Flaws { fOpenConditions :: [Goal]
-                   , fMotivationFlaws :: [MotivationFlaw]
-                   } deriving (Show)
-
-instance Monoid Flaws where
-  mempty      = Flaws { fOpenConditions  = []
-                      , fMotivationFlaws = []
-                      }
-  mappend l r = Flaws { fOpenConditions  = merge fOpenConditions
-                      , fMotivationFlaws = merge fMotivationFlaws
-                      }
-    where
-    merge p = (mappend `on` p) l r
-
-noFlaws :: Flaws -> Bool
-noFlaws Flaws { .. } = null fOpenConditions
-
--- | Remove an open condition from the flaw state, or backtrack if it's empty.
-nextOpenCondition :: MonadPlus m => Flaws -> m (Goal,Flaws)
-nextOpenCondition flaws =
-  case fOpenConditions flaws of
-    g:gs -> return (g, flaws { fOpenConditions = gs })
-    _    -> mzero
+data Flaw = FOpenCond Goal
+          | FMotivation FrameRef
+          | FIntent Step FrameRef
+            deriving (Show)
 
 
 -- PlanState Operations --------------------------------------------------------
@@ -128,7 +108,7 @@ initialPlan as gs = ((Start `isBefore` Finish) psFinish, flaws)
                           }
 
   (psStart,_)      = addAction Start emptyAction { aName   = "<Start>"
-                                                 , aEffect = map EPred as
+                                                 , aEffect = as
                                                  } emptyPlan
 
   (psFinish,flaws) = addAction Finish emptyAction { aName     = "<Finish>"
@@ -159,6 +139,9 @@ addFrame frame p = (p',key)
 
   p' = p { pFrames = Map.insert key frame (pFrames p) }
 
+getFrame :: FrameRef -> Plan -> Maybe Frame
+getFrame ref Plan { .. } = Map.lookup ref pFrames
+
 -- | Modify an existing action.
 modifyAction :: Step -> (Node -> Node) -> (Plan -> Plan)
 modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
@@ -167,14 +150,14 @@ modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 -- preconditions of the action will be considered goals, and appended to the
 -- agenda.
 addAction :: Step -> Action -> Plan -> (Plan,Flaws)
-addAction act oper p = (p',mempty { fOpenConditions = newGoals })
+addAction act oper p = (p',newGoals)
   where
   p' = p { pNodes = Map.insert act Node { nodeInst     = oper
                                         , nodeBefore   = Set.empty
                                         , nodeAfter    = Set.empty
                                         } (pNodes p) }
 
-  newGoals = [ Goal act tm | tm <- aPrecond oper ]
+  newGoals = [ FOpenCond (Goal act tm) | tm <- aPrecond oper ]
 
 -- | Record that action a comes before action b, in the plan state.
 isBefore :: Step -> Step -> Plan -> Plan
@@ -230,6 +213,38 @@ orderedActions ps = [ act | vert <- sorted
   sorted               = sortBy ordRel (Graph.vertices graph)
 
 
+-- Frame Operations ------------------------------------------------------------
+
+-- | Gather up frames of commitment that are related by the same character
+-- intent.
+sameIntent :: Step -> Plan -> Set.Set FrameRef
+sameIntent s_add p
+  | Just node <- getAction s_add p = relatedBy (nodeInst node)
+  | otherwise                      = Set.empty
+  where
+  relatedBy act =
+    Set.fromList [ k | (k,f) <- Map.toList (pFrames p)
+                     , let steps = Set.intersection interactingSteps (allSteps f)
+                     , not (Set.null steps)
+                     , F.all sameActors steps ]
+    where
+
+    interactsWithNew Link { .. } = clLeft == s_add
+
+    interactingSteps = Set.map clRight (Set.filter interactsWithNew (pLinks p))
+
+    -- XXX this currently relies on the actors being positionally the same, so
+    -- the actors [A,B] will differ from [B,A]
+    sameActors sid
+
+      | Just Node { nodeInst = act' } <- getAction sid p =
+        isRight (match (pBindings p) (aActors act) (aActors act'))
+
+      | otherwise =
+        False
+
+
+
 -- Node Operations -------------------------------------------------------------
 
 addAfter :: Step -> Node -> Node
@@ -257,4 +272,5 @@ instance Zonk Goal where
                            <*> zonk' gGoal
 
 instance PP Goal where
-  pp Goal { .. } = pp gGoal <+> text "from" <+> pp gSource
+  pp Goal { .. } = hang (pp gGoal)
+                      2 (text "from" <+> pp gSource)

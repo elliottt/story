@@ -50,6 +50,7 @@ zonk env a = case runUnifyM env (zonk' a) of
                Right (a',_) -> Right a'
                Left err     -> Left err
 
+
 -- Unification Monad -----------------------------------------------------------
 
 data RW = RW { rwSeen :: Set.Set Var
@@ -112,6 +113,13 @@ instance Zonk Step where
   zonk' (Inst i p ts) = Inst i p `fmap` zonk' ts
   zonk' Finish        = return Finish
 
+instance Zonk Frame where
+  zonk' (Frame a b c d) = do fSteps <- zonk' a
+                             fActor <- zonk' b
+                             fGoal  <- zonk' c
+                             fFinal <- zonk' d
+                             return Frame { .. }
+
 instance Zonk Const where
   zonk' (CNeq a b) = CNeq  `fmap` zonk' a `ap` zonk' b
   zonk' (CPred p)  = CPred `fmap` zonk' p
@@ -124,10 +132,6 @@ instance Zonk Action where
        aEffect      <- zonk' qs
        return Action { .. }
 
-instance Zonk Effect where
-  zonk' (EPred p)        = EPred    `fmap` zonk' p
-  zonk' (EIntends who p) = EIntends `fmap` zonk' who `ap` zonk' p
-
 instance Zonk Pred where
   zonk' (Pred pNeg pSym ts) =
     do pArgs <- zonk' ts
@@ -135,11 +139,18 @@ instance Zonk Pred where
 
 instance Zonk Term where
   zonk' tm = case tm of
-    TVar v -> do rw <- UnifyM get
-                 case Map.lookup v (rwEnv rw) of
-                   Just tm' -> zonk' tm'
-                   Nothing  -> return tm
-    _      -> return tm
+
+    TVar v ->
+      do rw <- UnifyM get
+         case Map.lookup v (rwEnv rw) of
+           Just tm' -> zonk' tm'
+           Nothing  -> return tm
+
+    TPred p ->
+      TPred <$> zonk' p
+
+    _ ->
+      return tm
 
 instance Zonk Link where
   zonk' (Link l p r) = Link <$> zonk' l
@@ -168,17 +179,6 @@ instance (Unify a, Unify b) => Unify (a,b) where
 
   match' (a,b) (c,d) = do match' a c
                           match' b d
-
-instance Unify Effect where
-  mgu' (EPred p)        (EPred q)          = mgu' p q
-  mgu' (EIntends who p) (EIntends who' p') = do mgu' who who'
-                                                mgu' p   p'
-  mgu' _                _                  = raise UnificationFailed
-
-  match' (EPred p)        (EPred q)          = match' p q
-  match' (EIntends who p) (EIntends who' p') = do match' who who'
-                                                  match' p   p'
-  match' _                _                  = raise MatchingFailed
 
 instance Unify Const where
   mgu' (CNeq a b) (CNeq x y) = do mgu' a x
@@ -215,6 +215,8 @@ instance Unify Term where
 
   mgu' (TVar v1) (TVar v2) | v1 == v2 = return ()
 
+  mgu' (TPred p) (TPred q) = mgu' p q
+
   -- unification variables bind in either direction
   mgu' (TVar v1) b =
     do mb <- lookupVar v1
@@ -238,6 +240,8 @@ instance Unify Term where
   match' (TCon c1) (TCon c2) | c1 == c2 = return ()
 
   match' (TVar v1) (TVar v2) | v1 == v2 = return ()
+
+  match' (TPred p) (TPred q) = match' p q
 
   -- matching only allows variables to be instantiated on the LHS
   match' (TVar v1) b =

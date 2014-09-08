@@ -1,6 +1,7 @@
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Types where
 
@@ -14,14 +15,14 @@ import qualified Data.Set as Set
 
 -- Terms -----------------------------------------------------------------------
 
-data Effect = EPred Pred
-            | EIntends Term Pred
-              deriving (Show,Eq,Ord)
+type Effect = Pred
 
 data Pred = Pred { pNeg  :: Bool
                  , pSym  :: String 
                  , pArgs :: [Term]
                  } deriving (Show,Eq,Ord)
+
+pattern PIntends a p = Pred True "intends" [a, TPred p]
 
 negPred :: Pred -> Pred
 negPred p = p { pNeg = not (pNeg p) }
@@ -32,11 +33,10 @@ data Const = CNeq Term Term -- ^ Inequality
 
 type Type = Term
 
-type Actor = Term
-
 data Term = TVar Var
           | TGen Var
           | TCon String
+          | TPred Pred
             deriving (Eq,Show,Ord)
 
 instance IsString Term where
@@ -53,6 +53,8 @@ instance Eq Var where
 instance Ord Var where
   compare = compare `on` varIndex
 
+
+type Actor = Term
 
 data Action = Action { aName        :: String
                      , aActors      :: [Actor]
@@ -95,19 +97,17 @@ class Inst a where
 instance Inst a => Inst [a] where
   inst as = map (inst as)
 
-instance Inst Effect where
-  inst as (EPred f)        = EPred    (inst as f)
-  inst as (EIntends who p) = EIntends (inst as who) (inst as p)
-
 instance Inst Pred where
   inst as p = p { pArgs = inst as (pArgs p) }
 
 instance Inst Term where
-  inst as (TGen v) = as !! varIndex v
-  inst _  tm         = tm
+  inst as (TGen v)  = as !! varIndex v
+  inst as (TPred p) = TPred (inst as p)
+  inst _  tm        = tm
 
 instance Inst Action where
-  inst as act = act { aPrecond = inst as (aPrecond act)
+  inst as act = act { aActors  = inst as (aActors  act)
+                    , aPrecond = inst as (aPrecond act)
                     , aEffect  = inst as (aEffect  act) }
 
 
@@ -127,6 +127,9 @@ data Frame = Frame { fSteps :: Set.Set Step
                    , fGoal  :: Pred
                    , fFinal :: Step
                    } deriving (Show,Eq,Ord)
+
+allSteps :: Frame -> Set.Set Step
+allSteps Frame { .. } = Set.insert fFinal fSteps
 
 type Assumps = [Pred]
 
@@ -157,20 +160,24 @@ instance Ord Step where
 
 -- Pretty-printing -------------------------------------------------------------
 
-instance PP Effect where
-  pp (EPred p)        = pp p
-  pp (EIntends who p) = text "intends" <> parens (pp who <> comma <+> pp p)
+instance PP Frame where
+  pp Frame { .. } =
+    angles $ commas [ brackets (commas (map pp (Set.toList fSteps)))
+                    , pp fActor
+                    , pp fGoal
+                    , pp fFinal ]
 
 instance PP Pred where
   pp Pred { .. } = ppNeg <> text pSym <> parens (commas (map pp pArgs))
     where
-    ppNeg | pNeg      = char '~'
-          | otherwise = empty
+    ppNeg | pNeg      = empty
+          | otherwise = char '~'
 
 instance PP Term where
-  pp (TVar v) = char '?' <> pp v
-  pp (TGen v) =             pp v
-  pp (TCon c) = text c
+  pp (TVar v)  = char '?' <> pp v
+  pp (TGen v)  =             pp v
+  pp (TCon c)  = text c
+  pp (TPred p) = pp p
 
 instance PP Var where
   pp Var { varDisplay = Just str } = text str
