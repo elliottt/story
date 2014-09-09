@@ -120,16 +120,11 @@ instance Zonk Frame where
                              fFinal <- zonk' d
                              return Frame { .. }
 
-instance Zonk Const where
-  zonk' (CNeq a b) = CNeq  `fmap` zonk' a `ap` zonk' b
-  zonk' (CPred p)  = CPred `fmap` zonk' p
-
 instance Zonk Action where
-  zonk' (Action aName as aHappening cs ps qs) =
-    do aPrecond     <- zonk' ps
-       aActors      <- zonk' as
-       aConstraints <- zonk' cs
-       aEffect      <- zonk' qs
+  zonk' (Action aName as aHappening ps qs) =
+    do aPrecond <- zonk' ps
+       aActors  <- zonk' as
+       aEffect  <- zonk' qs
        return Action { .. }
 
 instance Zonk Pred where
@@ -179,17 +174,6 @@ instance (Unify a, Unify b) => Unify (a,b) where
 
   match' (a,b) (c,d) = do match' a c
                           match' b d
-
-instance Unify Const where
-  mgu' (CNeq a b) (CNeq x y) = do mgu' a x
-                                  mgu' b y
-  mgu' (CPred p)  (CPred q)  =    mgu' p q
-  mgu' _          _          =    raise UnificationFailed
-
-  match' (CNeq a b) (CNeq x y) = do match' a x
-                                    match' b y
-  match' (CPred p)  (CPred q)  =    match' p q
-  match' _          _          =    raise MatchingFailed
 
 instance Unify Pred where
   mgu' (Pred n1 p1 args1) (Pred n2 p2 args2)

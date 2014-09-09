@@ -24,12 +24,10 @@ data Pred = Pred { pNeg  :: Bool
 
 pattern PIntends a p = Pred True "intends" [a, TPred p]
 
+pattern PNeq p q = Pred True "neq" [p,q]
+
 negPred :: Pred -> Pred
 negPred p = p { pNeg = not (pNeg p) }
-
-data Const = CNeq Term Term -- ^ Inequality
-           | CPred Pred     -- ^ Typing predicates
-             deriving (Show,Eq,Ord)
 
 type Type = Term
 
@@ -41,6 +39,12 @@ data Term = TVar Var
 
 instance IsString Term where
   fromString = TCon
+
+ground :: Term -> Bool
+ground TVar {}   = False
+ground TGen {}   = True
+ground TCon {}   = True
+ground (TPred p) = all ground (pArgs p)
 
 data Var = Var { varDisplay :: Maybe String
                , varIndex   :: Int
@@ -59,7 +63,6 @@ type Actor = Term
 data Action = Action { aName        :: String
                      , aActors      :: [Actor]
                      , aHappening   :: Bool
-                     , aConstraints :: [Const]
                      , aPrecond     :: [Pred]
                      , aEffect      :: [Effect]
                      } deriving (Show,Eq,Ord)
@@ -68,7 +71,6 @@ emptyAction :: Action
 emptyAction  = Action { aName        = ""
                       , aActors      = []
                       , aHappening   = False
-                      , aConstraints = []
                       , aPrecond     = []
                       , aEffect      = [] }
 

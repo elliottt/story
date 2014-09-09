@@ -2,6 +2,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module IPOCL where
 
@@ -140,11 +141,25 @@ zonkDbg l a = do a' <- zonk a
 -- | Solve a series of goals.
 solveGoals :: Flaws -> PlanM ()
 
-solveGoals (FOpenCond g : flaws') =
-  do zonkDbg "Open Condition" g
-     newFlaws <- discoveryAndResolution (causalPlanning g)
-     guard =<< fromPlan planConsistent
-     solveGoals (flaws' ++ newFlaws)
+solveGoals (FOpenCond g : flaws')
+
+  | PNeq p q <- gGoal g =
+    do zonkDbg "Inequality" (gGoal g)
+       (p',q') <- zonk (p,q)
+       if ground p' && ground q'
+
+          -- make sure that the two are different, and solve the goal
+          then do guard (p' /= q')
+                  solveGoals flaws'
+
+          -- not enough information, defer the goal
+          else    solveGoals (flaws' ++ [FOpenCond g])
+
+  | otherwise =
+    do zonkDbg "Open Condition" g
+       newFlaws <- discoveryAndResolution (causalPlanning g)
+       guard =<< fromPlan planConsistent
+       solveGoals (flaws' ++ newFlaws)
 
 solveGoals (FMotivation ref : flaws') =
   do frame <- lookupFrame ref
@@ -408,12 +423,12 @@ testDomain =
     Action { aName        = "threaten"
            , aActors      = [ monster ]
            , aHappening   = True
-           , aConstraints = [ CPred $ Pred True "monster"   [ monster ]
-                            , CPred $ Pred True "character" [ char    ]
-                            , CPred $ Pred True "place"     [ place   ]
-                            , CNeq char monster
-                            ]
-           , aPrecond     = [ Pred True "at"    [ monster, place ]
+           , aPrecond     = [ Pred True "monster"   [ monster ]
+                            , Pred True "character" [ char    ]
+                            , Pred True "place"     [ place   ]
+                            , PNeq char monster
+
+                            , Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
                             , Pred True "scary" [ monster        ]
                             ]
@@ -425,11 +440,11 @@ testDomain =
     Action { aName        = "slay"
            , aActors      = [ char ]
            , aHappening   = False
-           , aConstraints = [ CPred $ Pred True "monster"   [ monster ]
-                            , CPred $ Pred True "character" [ char    ]
-                            , CPred $ Pred True "place"     [ place   ]
-                            ]
-           , aPrecond     = [ Pred True "at"    [ monster, place ]
+           , aPrecond     = [ Pred True "monster"   [ monster ]
+                            , Pred True "character" [ char    ]
+                            , Pred True "place"     [ place   ]
+
+                            , Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
                             , Pred True "scary" [ monster        ]
                             , Pred True "alive" [ monster        ]
@@ -443,7 +458,6 @@ testDomain =
     Action { aName        = "go"
            , aActors      = [ char ]
            , aHappening   = False
-           , aConstraints = []
            , aPrecond     = [ Pred True "at"    [ char, place ]
                             , Pred True "alive" [ char        ]
                             ]
