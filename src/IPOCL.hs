@@ -352,19 +352,26 @@ motivationPlanning ref c @ Frame { .. } =
 
 frameSelection :: Step -> FrameRef -> Frame -> PlanM Flaws
 frameSelection step ref frame =
-  msum [ do updatePlan_ ( modifyFrame ref update
-                        . (step `isBeforeFrame` frame) )
+  msum [ do motivation <- case fMotivation frame of
+                            Just s  -> return s
+                            Nothing -> mzero
+
+            -- add the step to the frame, and order it after the motivating
+            -- step
+            updatePlan_ ( modifyFrame ref addStep
+                        . (motivation `isBefore` step) )
+
+            -- XXX order frames WRT each other
 
             -- XXX generate intent flaws for causal links with the same
-            -- character
+            -- character that occur before the new step
 
             return []
 
        ,    return []
        ]
   where
-  update frame = frame { fSteps = Set.insert step (fSteps frame)
-                       }
+  addStep frame = frame { fSteps = Set.insert step (fSteps frame) }
 
 
 -- Testing ---------------------------------------------------------------------

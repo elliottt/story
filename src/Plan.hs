@@ -125,7 +125,6 @@ getBindings  = pBindings
 setBindings :: Env -> Plan -> Plan
 setBindings env p = p { pBindings = env }
 
-
 getActions :: Plan -> [(Step,Node)]
 getActions Plan { .. } = Map.toList pNodes
 
