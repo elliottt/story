@@ -164,13 +164,15 @@ solveGoals (FOpenCond g : flaws')
 solveGoals (FMotivation ref : flaws') =
   do frame <- lookupFrame ref
      zonkDbg "Motivation Flaw" frame
-     newFlaws <- discoveryAndResolution (motivationPlanning frame)
+     newFlaws <- discoveryAndResolution (motivationPlanning ref frame)
      guard =<< fromPlan planConsistent
      solveGoals (flaws' ++ newFlaws)
 
 solveGoals (FIntent step ref : flaws') =
-  do dbg "Intent Flaw" ref
-     undefined
+  do frame <- lookupFrame ref
+     zonkDbg "Intent Flaw" (step,fGoal frame)
+     newFlaws <- frameSelection step ref frame
+     solveGoals (flaws' ++ newFlaws)
 
 solveGoals [] =
      return ()
@@ -214,10 +216,11 @@ discoverFrameFlaws s_add = discoverEffectFrame `mplus` noFrame
     do refs <- updatePlan (addFrames (map mkFrame actors))
        return [ FMotivation ref | ref <- refs ]
     where
-    mkFrame a = Frame { fSteps = Set.empty
-                      , fActor = a
-                      , fGoal  = p
-                      , fFinal = s_add
+    mkFrame a = Frame { fSteps      = Set.empty
+                      , fActor      = a
+                      , fGoal       = p
+                      , fFinal      = s_add
+                      , fMotivation = Nothing
                       }
 
   addFrames frames plan = T.mapAccumL (flip addFrame) plan frames
@@ -329,18 +332,39 @@ causalPlanning Goal { .. } =
 -- Motivation Planning ---------------------------------------------------------
 
 -- | A frame of commitment that currently lacks a motivating step.
-motivationPlanning :: Frame -> PlanM (Bool,Step,Flaws)
-motivationPlanning c @ Frame { .. } =
+motivationPlanning :: FrameRef -> Frame -> PlanM (Bool,Step,Flaws)
+motivationPlanning ref c @ Frame { .. } =
   do let goal = PIntends fActor fGoal
 
      res @ (isNew,s_add,flaws) <- operatorSelection goal
 
-     let orderings = [ s_add `isBefore` step | step <- Set.toList (allSteps c) ]
-         link      = Link s_add fGoal fFinal
+     let link = Link s_add fGoal fFinal
 
-     updatePlan_ ( foldl (.) (addLink link) orderings )
+     updatePlan_ ( (s_add `isBeforeFrame` c)
+                 . addLink link
+                 . modifyFrame ref (\ f -> f { fMotivation = Just s_add })
+                 )
 
      return res
+
+
+-- Intent Planning -------------------------------------------------------------
+
+frameSelection :: Step -> FrameRef -> Frame -> PlanM Flaws
+frameSelection step ref frame =
+  msum [ do updatePlan_ ( modifyFrame ref update
+                        . (step `isBeforeFrame` frame) )
+
+            -- XXX generate intent flaws for causal links with the same
+            -- character
+
+            return []
+
+       ,    return []
+       ]
+  where
+  update frame = frame { fSteps = Set.insert step (fSteps frame)
+                       }
 
 
 -- Testing ---------------------------------------------------------------------
@@ -476,12 +500,13 @@ testDomain =
 
 testAssumps =
   [ Pred True "place"     [ "Castle" ]
+  , Pred True "place"     [ "Forest" ]
   , Pred True "character" [ "Knight" ]
   , Pred True "monster"   [ "Dragon" ]
   , Pred True "alive"     [ "Knight" ]
   , Pred True "alive"     [ "Dragon" ]
 
-  , Pred True "at"        [ "Knight", "Castle" ]
+  , Pred True "at"        [ "Knight", "Forest" ]
   , Pred True "at"        [ "Dragon", "Castle" ]
   , Pred True "scary"     [ "Dragon" ]
   ]

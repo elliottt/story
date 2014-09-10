@@ -11,8 +11,10 @@ module Plan (
 
   , FrameRef
   , addFrame
+  , modifyFrame
   , getFrame
   , sameIntent
+  , isBeforeFrame
 
     -- ** Variable Bindings
   , getBindings
@@ -139,6 +141,9 @@ addFrame frame p = (p',key)
 
   p' = p { pFrames = Map.insert key frame (pFrames p) }
 
+modifyFrame :: FrameRef -> (Frame -> Frame) -> Plan -> Plan
+modifyFrame ref f ps = ps { pFrames = Map.adjust f ref (pFrames ps) }
+
 getFrame :: FrameRef -> Plan -> Maybe Frame
 getFrame ref Plan { .. } = Map.lookup ref pFrames
 
@@ -163,6 +168,11 @@ addAction act oper p = (p',newGoals)
 isBefore :: Step -> Step -> Plan -> Plan
 a `isBefore` b = modifyAction b (addBefore a)
                . modifyAction a (addAfter  b)
+
+isBeforeFrame :: Step -> Frame -> Plan -> Plan
+a `isBeforeFrame` c = foldl (.) id orderings
+  where
+  orderings = [ a `isBefore` step | step <- Set.toList (allSteps c) ]
 
 addLink :: Link -> Plan -> Plan
 addLink l p = p { pLinks = Set.insert l (pLinks p) }

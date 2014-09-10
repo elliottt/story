@@ -128,6 +128,7 @@ data Frame = Frame { fSteps :: Set.Set Step
                    , fActor :: Actor
                    , fGoal  :: Pred
                    , fFinal :: Step
+                   , fMotivation :: Maybe Step
                    } deriving (Show,Eq,Ord)
 
 allSteps :: Frame -> Set.Set Step
@@ -167,7 +168,8 @@ instance PP Frame where
     angles $ commas [ brackets (commas (map pp (Set.toList fSteps)))
                     , pp fActor
                     , pp fGoal
-                    , pp fFinal ]
+                    , pp fFinal
+                    , maybe (text "<no motivation>") pp fMotivation ]
 
 instance PP Pred where
   pp Pred { .. } = ppNeg <> text pSym <> parens (commas (map pp pArgs))

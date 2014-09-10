@@ -89,6 +89,9 @@ instance Zonk a => Zonk (SCC a) where
 instance Zonk a => Zonk [a] where
   zonk' = traverse zonk'
 
+instance Zonk a => Zonk (Maybe a) where
+  zonk' = traverse zonk'
+
 instance (Ord a, Zonk a) => Zonk (Set.Set a) where
   zonk' as = do as' <- traverse zonk' (Set.toList as)
                 return (Set.fromList as')
@@ -114,11 +117,13 @@ instance Zonk Step where
   zonk' Finish        = return Finish
 
 instance Zonk Frame where
-  zonk' (Frame a b c d) = do fSteps <- zonk' a
-                             fActor <- zonk' b
-                             fGoal  <- zonk' c
-                             fFinal <- zonk' d
-                             return Frame { .. }
+  zonk' (Frame a b c d e) =
+    do fSteps      <- zonk' a
+       fActor      <- zonk' b
+       fGoal       <- zonk' c
+       fFinal      <- zonk' d
+       fMotivation <- zonk' e
+       return Frame { .. }
 
 instance Zonk Action where
   zonk' (Action aName as aHappening ps qs) =
