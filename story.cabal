@@ -14,7 +14,8 @@ library
                        Plan,
                        IPOCL,
                        FloydWarshall,
-                       Pretty
+                       Pretty,
+                       DiscTrie
   build-depends:       base >=4.6 && <5,
                        containers >=0.5,
                        monadLib >=3.7,
