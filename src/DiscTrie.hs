@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module DiscTrie where
 
@@ -65,13 +66,45 @@ insertTerms [] a (Node mbStar m as) = Node mbStar m (a:as)
 
 lookupTerms :: [Term] -> Node a -> [a]
 
-lookupTerms (t:ts) (Node mbStar m _) = specific ++ lookupStar
+lookupTerms (t:ts) node@(Node mbStar m _) = specific
   where
-  lookupStar = maybe [] (lookupTerms ts)           mbStar
 
   specific =
     case isSym t of
-      Just (sym,args) -> maybe [] (lookupTerms (args ++ ts)) (Map.lookup sym m)
-      Nothing         -> concatMap (lookupTerms ts) (Map.elems m)
+      Just (sym,args) -> maybe [] (lookupTerms ts) mbStar
+                      ++ maybe [] (lookupTerms (args ++ ts)) (Map.lookup sym m)
+      Nothing         -> concatMap (lookupTerms ts) (dropPrefix 1 node)
 
 lookupTerms [] (Node _ _ as) = as
+
+dropPrefix :: Int -> Node a -> [Node a]
+dropPrefix 0 node = [node]
+dropPrefix n (Node mbStar m _) =
+  maybe [] (dropPrefix n') mbStar ++ concatMap f (Map.toList m)
+  where
+  n'                        = n - 1
+  f (SPred _ arity _, node) = dropPrefix (n' + arity) node
+  f (_, node)               = dropPrefix n'           node
+
+
+-- Tests -----------------------------------------------------------------------
+
+db = foldr (\ (i,p) n -> DiscTrie.insert p i n) empty
+  [ mk (Pred True "f" [ x, x ])
+  , mk (Pred True "f" [ x, y ])
+  , mk (Pred True "f" [ x, "b" ])
+  , mk (Pred True "f" [ TPred (Pred True "g" [ "a" ]), x ])
+  , mk (Pred True "f" [ TPred (Pred True "g" [ "a" ]), "b" ])
+  , mk (Pred True "f" [ "b", "a" ])
+  , mk (Pred True "g" [ x ])
+  , mk (Pred True "g" [ z ])
+  , mk (Pred True "g" [ "a" ])
+  ]
+  where
+  mk a = (a,a)
+
+x = TVar $ Var (Just "x") 0
+y = TVar $ Var (Just "y") 1
+z = TVar $ Var (Just "z") 2
+
+query q = DiscTrie.lookup q db
