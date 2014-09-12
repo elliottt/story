@@ -34,6 +34,9 @@ instance (PP a, PP b) => PP (Either a b) where
 instance (PP a, PP b) => PP (a,b) where
   pp (a,b) = parens (commas [pp a, pp b])
 
+instance (PP a, PP b, PP c) => PP (a,b,c) where
+  pp (a,b,c) = parens (commas [pp a, pp b, pp c])
+
 instance PP a => PP [a] where
   pp as = brackets (commas (map pp as))
 

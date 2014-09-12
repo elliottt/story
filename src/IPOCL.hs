@@ -6,6 +6,7 @@
 
 module IPOCL where
 
+import qualified DiscTrie as T
 import           Pretty
 import           Plan
 import           Types
@@ -13,6 +14,7 @@ import qualified Unify
 
 import           Control.Applicative
 import           Data.Foldable ( forM_ )
+import           Data.Maybe ( mapMaybe )
 import           Data.Monoid ( mempty, mappend )
 import qualified Data.Set as Set
 import qualified Data.Traversable as T
@@ -22,7 +24,7 @@ import           Debug.Trace
 
 
 ipocl :: Domain -> Assumps -> Goals -> Maybe [Step]
-ipocl d as gs = runPlanM d p $
+ipocl d as gs = runPlanM as d p $
   do solveGoals flaws
      zonk =<< fromPlan orderedActions
   where
@@ -36,19 +38,22 @@ newtype PlanM a = PlanM { unPlanM :: StateT RW (ChoiceT Id) a
                                    ,MonadPlus)
 
 data RW = RW { rwFresh  :: Int
-             , rwDomain :: Domain
+             , rwDomain :: T.Domain
              , rwPlan   :: Plan
+             , rwFacts  :: T.Facts
+               -- ^ Static knowledge from the initial state
              } deriving (Show)
 
-runPlanM :: Domain -> Plan -> PlanM a -> Maybe a
-runPlanM d p m =
+runPlanM :: Assumps -> Domain -> Plan -> PlanM a -> Maybe a
+runPlanM as d p m =
   case runId (findOne (runStateT rw (unPlanM m))) of
     Just (a,_) -> Just a
     Nothing    -> Nothing
   where
   rw = RW { rwFresh  = 0
-          , rwDomain = d
+          , rwDomain = T.mkDomain d
           , rwPlan   = p
+          , rwFacts  = T.mkFacts as
           }
 
 
@@ -64,6 +69,10 @@ updatePlan f = PlanM $ do rw <- get
                           let (p',a) = f (rwPlan rw)
                           set $! rw { rwPlan = p' }
                           return a
+
+getFacts :: PlanM T.Facts
+getFacts  = PlanM $ do RW { .. } <- get
+                       return rwFacts
 
 getBinds :: PlanM Unify.Env
 getBinds  = fromPlan getBindings
@@ -88,7 +97,7 @@ freshInst (Forall vs a) =
      let oper = inst ts a
      return (Inst ix (aName oper) ts, oper)
 
-getDomain :: PlanM Domain
+getDomain :: PlanM T.Domain
 getDomain  = PlanM (rwDomain <$> get)
 
 getNode :: Step -> PlanM Node
@@ -144,7 +153,7 @@ solveGoals :: Flaws -> PlanM ()
 solveGoals (FOpenCond g : flaws')
 
   | PNeq p q <- gGoal g =
-    do zonkDbg "Inequality" (gGoal g)
+    do --zonkDbg "Inequality" (gGoal g)
        (p',q') <- zonk (p,q)
        if ground p' && ground q'
 
@@ -156,21 +165,21 @@ solveGoals (FOpenCond g : flaws')
           else    solveGoals (flaws' ++ [FOpenCond g])
 
   | otherwise =
-    do zonkDbg "Open Condition" g
+    do -- zonkDbg "Open Condition" g
        newFlaws <- discoveryAndResolution (causalPlanning g)
        guard =<< fromPlan planConsistent
        solveGoals (flaws' ++ newFlaws)
 
 solveGoals (FMotivation ref : flaws') =
   do frame <- lookupFrame ref
-     zonkDbg "Motivation Flaw" frame
+     -- zonkDbg "Motivation Flaw" frame
      newFlaws <- discoveryAndResolution (motivationPlanning ref frame)
      guard =<< fromPlan planConsistent
      solveGoals (flaws' ++ newFlaws)
 
 solveGoals (FIntent step ref : flaws') =
   do frame <- lookupFrame ref
-     zonkDbg "Intent Flaw" (step,fGoal frame)
+     -- zonkDbg "Intent Flaw" (step,fGoal frame)
      newFlaws <- frameSelection step ref frame
      solveGoals (flaws' ++ newFlaws)
 
@@ -305,16 +314,42 @@ byAssumption goal =
 byNewStep :: Pred -> PlanM (Step,Flaws)
 byNewStep goal =
   do dom <- getDomain
-     msum (map tryInst dom)
+     msum (map tryInst (T.lookup goal dom))
   where
   tryInst s =
     do (act,op) <- freshInst s
-       msum [ unify q goal | q <- aEffect op ]
+
+       -- find an effect that matches the goal
+       env <- getBinds
+       case mapMaybe (isRelevant env) (aEffect op) of
+         env' : _ -> setBinds env'
+         []       -> mzero
 
        flaws <- updatePlan (addAction act op)
        updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
 
+       -- when constraints exist, examine the facts to variable binding choices
+       useConstraints act (aConstraints op)
+
+       -- zonkDbg "New step" act
+
        return (act,flaws)
+
+  isRelevant env q =
+    case Unify.mgu env goal q of
+      Right env' -> Just env'
+      Left _     -> Nothing
+
+
+useConstraints :: Step -> [Pred] -> PlanM ()
+useConstraints from ps =
+  do facts <- getFacts
+     loop facts ps
+  where
+  loop facts (p:ps) = msum [ do unify p atom
+                                loop facts ps
+                           | atom <- T.lookup p facts ]
+  loop _     []     = return ()
 
 
 -- Causal Planning -------------------------------------------------------------
@@ -454,11 +489,11 @@ testDomain =
     Action { aName        = "threaten"
            , aActors      = [ monster ]
            , aHappening   = True
-           , aPrecond     = [ Pred True "monster"   [ monster ]
+           , aConstraints = [ Pred True "monster"   [ monster ]
                             , Pred True "character" [ char    ]
                             , Pred True "place"     [ place   ]
-                            , PNeq char monster
-
+                            ]
+           , aPrecond     = [ PNeq char monster
                             , Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
                             , Pred True "scary" [ monster        ]
@@ -467,14 +502,15 @@ testDomain =
                             ]
            }
 
-  , forall ["monster", "char", "place"] $ \ [ monster, char, place ] ->
+  , forall ["char", "monster", "place"] $ \ [ char, monster, place ] ->
     Action { aName        = "slay"
            , aActors      = [ char ]
            , aHappening   = False
-           , aPrecond     = [ Pred True "monster"   [ monster ]
-                            , Pred True "character" [ char    ]
+           , aConstraints = [ Pred True "character" [ char    ]
+                            , Pred True "monster"   [ monster ]
                             , Pred True "place"     [ place   ]
-
+                            ]
+           , aPrecond     = [ PNeq char monster
                             , Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
                             , Pred True "scary" [ monster        ]
@@ -488,9 +524,14 @@ testDomain =
   , forall ["char", "place", "newPlace"] $ \ [char, place, newPlace] ->
     Action { aName        = "go"
            , aActors      = [ char ]
-           , aHappening   = False
-           , aPrecond     = [ Pred True "at"    [ char, place ]
+           , aHappening   = True
+           , aConstraints = [
+                            ]
+           , aPrecond     = [ PNeq place newPlace
+                            , Pred True "at"    [ char, place ]
                             , Pred True "alive" [ char        ]
+                            , Pred True "place" [ place ]
+                            , Pred True "place" [ newPlace ]
                             ]
            , aEffect      = [ Pred False "at" [ char, place ]
                             , Pred True  "at" [ char, newPlace ]
@@ -498,16 +539,11 @@ testDomain =
            }
   ]
 
-  where
-
-  forall ns k = Forall vs (k (map TGen vs))
-    where
-    vs = [ Var { varDisplay = Just n, varIndex = i } | n <- ns
-                                                          | i <- [ 0 .. ] ]
 
 testAssumps =
-  [ Pred True "place"     [ "Castle" ]
-  , Pred True "place"     [ "Forest" ]
+  [ Pred True "place"     [ "Forest" ]
+  , Pred True "place"     [ "Castle" ]
+  , Pred True "place"     [ "Bridge" ]
   , Pred True "character" [ "Knight" ]
   , Pred True "monster"   [ "Dragon" ]
   , Pred True "alive"     [ "Knight" ]
@@ -518,8 +554,11 @@ testAssumps =
   , Pred True "scary"     [ "Dragon" ]
   ]
 
+-- XXX swapping the order of these two goals makes it seem like the planner
+-- won't terminate
 testGoals =
-  [ Pred False "alive" [ "Dragon" ]
+  [ Pred True  "at"    [ "Dragon", "Bridge" ]
+  , Pred False "alive" [ "Dragon" ]
   ]
 
 test :: IO ()

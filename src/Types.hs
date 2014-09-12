@@ -63,6 +63,7 @@ type Actor = Term
 data Action = Action { aName        :: String
                      , aActors      :: [Actor]
                      , aHappening   :: Bool
+                     , aConstraints :: [Pred]
                      , aPrecond     :: [Pred]
                      , aEffect      :: [Effect]
                      } deriving (Show,Eq,Ord)
@@ -71,6 +72,7 @@ emptyAction :: Action
 emptyAction  = Action { aName        = ""
                       , aActors      = []
                       , aHappening   = False
+                      , aConstraints = []
                       , aPrecond     = []
                       , aEffect      = [] }
 
@@ -108,9 +110,10 @@ instance Inst Term where
   inst _  tm        = tm
 
 instance Inst Action where
-  inst as act = act { aActors  = inst as (aActors  act)
-                    , aPrecond = inst as (aPrecond act)
-                    , aEffect  = inst as (aEffect  act) }
+  inst as act = act { aActors      = inst as (aActors  act)
+                    , aConstraints = inst as (aConstraints act)
+                    , aPrecond     = inst as (aPrecond act)
+                    , aEffect      = inst as (aEffect  act) }
 
 
 -- Plans -----------------------------------------------------------------------

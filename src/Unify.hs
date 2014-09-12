@@ -126,10 +126,11 @@ instance Zonk Frame where
        return Frame { .. }
 
 instance Zonk Action where
-  zonk' (Action aName as aHappening ps qs) =
-    do aPrecond <- zonk' ps
-       aActors  <- zonk' as
-       aEffect  <- zonk' qs
+  zonk' (Action aName as aHappening cs ps qs) =
+    do aPrecond     <- zonk' ps
+       aActors      <- zonk' as
+       aConstraints <- zonk' cs
+       aEffect      <- zonk' qs
        return Action { .. }
 
 instance Zonk Pred where

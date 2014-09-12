@@ -1,10 +1,22 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module DiscTrie where
+module DiscTrie (
+    DiscTrie()
+  , DiscTrie.empty
+  , DiscTrie.insert
+  , DiscTrie.lookup
 
-import           Types
+  , Facts
+  , mkFacts
 
+  , Domain
+  , mkDomain
+  ) where
+
+import           Types ( Pred(..), Term(..), Schema(..), Action(..) )
+
+import           Data.List ( foldl' )
 import qualified Data.Map.Strict as Map
 import           Data.Maybe ( fromMaybe )
 
@@ -29,6 +41,25 @@ lookup Pred { .. } t =
     Nothing   -> []
   where
   sym = SPred pNeg (length pArgs) pSym
+
+
+-- Utilities -------------------------------------------------------------------
+
+type Facts = DiscTrie Pred
+
+mkFacts :: [Pred] -> Facts
+mkFacts  = foldl' addFact empty
+  where
+  addFact t p = DiscTrie.insert p p t
+
+
+type Domain = DiscTrie (Schema Action)
+
+mkDomain :: [Schema Action] -> Domain
+mkDomain  = foldl' addEffect empty
+  where
+  addEffect    dom op@(Forall _ act) = foldl' (addAction op) dom (aEffect act)
+  addAction op dom effect         = insert effect op dom
 
 
 -- Nodes -----------------------------------------------------------------------
@@ -85,26 +116,3 @@ dropPrefix n (Node mbStar m _) =
   n'                        = n - 1
   f (SPred _ arity _, node) = dropPrefix (n' + arity) node
   f (_, node)               = dropPrefix n'           node
-
-
--- Tests -----------------------------------------------------------------------
-
-db = foldr (\ (i,p) n -> DiscTrie.insert p i n) empty
-  [ mk (Pred True "f" [ x, x ])
-  , mk (Pred True "f" [ x, y ])
-  , mk (Pred True "f" [ x, "b" ])
-  , mk (Pred True "f" [ TPred (Pred True "g" [ "a" ]), x ])
-  , mk (Pred True "f" [ TPred (Pred True "g" [ "a" ]), "b" ])
-  , mk (Pred True "f" [ "b", "a" ])
-  , mk (Pred True "g" [ x ])
-  , mk (Pred True "g" [ z ])
-  , mk (Pred True "g" [ "a" ])
-  ]
-  where
-  mk a = (a,a)
-
-x = TVar $ Var (Just "x") 0
-y = TVar $ Var (Just "y") 1
-z = TVar $ Var (Just "z") 2
-
-query q = DiscTrie.lookup q db
