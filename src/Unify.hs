@@ -72,9 +72,10 @@ lookupVar i = UnifyM $
      return (Map.lookup i (rwEnv rw))
 
 bindVar :: Var -> Term -> UnifyM ()
-bindVar i tm = UnifyM $
-  do rw <- get
-     set rw { rwEnv = Map.insert i tm (rwEnv rw) }
+bindVar i tm =
+  do tm' <- zonk' tm
+     UnifyM $ do rw  <- get
+                 set rw { rwEnv = Map.insert i tm' (rwEnv rw) }
 
 
 -- Primitive Unification -------------------------------------------------------
