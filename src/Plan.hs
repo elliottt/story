@@ -1,43 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 
-module Plan (
-    -- * Partial Plans
-    Plan()
-  , initialPlan
-  , addAction
-  , zonkPlan
-  , getActions, getAction
-  , planConsistent
-
-  , FrameRef
-  , addFrame
-  , modifyFrame
-  , getFrame
-  , sameIntent
-  , isBeforeFrame
-
-    -- ** Variable Bindings
-  , getBindings
-  , setBindings
-
-    -- ** Ordering Constraints
-  , isBefore
-  , orderedActions
-
-    -- ** Causal Links
-  , addLink
-  , getLinks
-
-    -- ** Graph Nodes
-  , Node()
-  , effects
-  , action
-
-    -- * Goals
-  , Goal(..)
-  , Flaws
-  , Flaw(..)
-  ) where
+module Plan where
 
 import FloydWarshall ( transitiveClosure )
 import Pretty

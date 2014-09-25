@@ -24,9 +24,10 @@ import           Debug.Trace
 
 
 ipocl :: Domain -> Assumps -> Goals -> Maybe [Step]
-ipocl d as gs = runPlanM as d p $
-  do solveGoals flaws
-     zonk =<< fromPlan orderedActions
+ipocl d as gs = runPlanM as d $
+  do p' <- solveGoals p flaws []
+     -- XXX require that there are no orphans
+     zonk p' (orderedActions p')
   where
   (p,flaws) = initialPlan as gs
 
@@ -39,52 +40,41 @@ newtype PlanM a = PlanM { unPlanM :: StateT RW (ChoiceT Id) a
 
 data RW = RW { rwFresh  :: Int
              , rwDomain :: T.Domain
-             , rwPlan   :: Plan
              , rwFacts  :: T.Facts
                -- ^ Static knowledge from the initial state
              } deriving (Show)
 
-runPlanM :: Assumps -> Domain -> Plan -> PlanM a -> Maybe a
-runPlanM as d p m =
+runPlanM :: Assumps -> Domain -> PlanM a -> Maybe a
+runPlanM as d m =
   case runId (findOne (runStateT rw (unPlanM m))) of
     Just (a,_) -> Just a
     Nothing    -> Nothing
   where
   rw = RW { rwFresh  = 0
           , rwDomain = T.mkDomain d
-          , rwPlan   = p
           , rwFacts  = T.mkFacts as
           }
-
-
-fromPlan :: (Plan -> a) -> PlanM a
-fromPlan f = PlanM (f . rwPlan <$> get)
-
-updatePlan_ :: (Plan -> Plan) -> PlanM ()
-updatePlan_ f = PlanM $ do rw <- get
-                           set $! rw { rwPlan = f (rwPlan rw) }
-
-updatePlan :: (Plan -> (Plan,a)) -> PlanM a
-updatePlan f = PlanM $ do rw <- get
-                          let (p',a) = f (rwPlan rw)
-                          set $! rw { rwPlan = p' }
-                          return a
 
 getFacts :: PlanM T.Facts
 getFacts  = PlanM $ do RW { .. } <- get
                        return rwFacts
 
-getBinds :: PlanM Unify.Env
-getBinds  = fromPlan getBindings
-
-setBinds :: Unify.Env -> PlanM ()
-setBinds bs = PlanM $ do rw <- get
-                         set rw { rwPlan = setBindings bs (rwPlan rw) }
-
 nextId :: PlanM Int
 nextId  = PlanM $ do rw <- get
                      set rw { rwFresh = rwFresh rw + 1 }
                      return (rwFresh rw)
+
+getNode :: Plan -> Step -> PlanM Node
+getNode p s =
+  case getAction s p of
+    Just n  -> return n
+    Nothing -> mzero
+
+lookupFrame :: Plan -> FrameRef -> PlanM Frame
+lookupFrame p ref =
+  case getFrame ref p of
+    Just frame -> return frame
+    Nothing    -> mzero
 
 fresh :: Var -> PlanM Term
 fresh v = do ix <- nextId
@@ -100,108 +90,96 @@ freshInst (Forall vs a) =
 getDomain :: PlanM T.Domain
 getDomain  = PlanM (rwDomain <$> get)
 
-getNode :: Step -> PlanM Node
-getNode step =
-  do mb <- fromPlan (getAction step)
-     case mb of
-       Just node -> return node
-       Nothing   -> error ("Invalid Step: " ++ show step)
-
-lookupFrame :: FrameRef -> PlanM Frame
-lookupFrame ref =
-  do mb <- fromPlan (getFrame ref)
-     case mb of
-       Just frame -> return frame
-       Nothing    -> error ("Invalid FrameRef: " ++ show ref)
-
 -- XXX extending the binding environment might invalidate the causal links.
 -- What's the best way to detect this?
-match :: Unify.Unify tm => tm -> tm -> PlanM ()
-match l r =
-  do bs <- getBinds
-     case Unify.match bs l r of
-       Right bs' -> setBinds bs'
-       Left _    -> mzero
+match :: Unify.Unify tm => tm -> tm -> Plan -> PlanM Plan
+match l r p =
+  case Unify.match (pBindings p) l r of
+    Right bs' -> return p { pBindings = bs' }
+    Left _    -> mzero
 
-unify :: (Unify.Unify tm, PP tm) => tm -> tm -> PlanM ()
-unify l r =
-  do bs <- getBinds
-     case Unify.mgu bs l r of
-       Right bs' -> setBinds bs'
-       Left _    -> mzero
+unify :: (Unify.Unify tm, PP tm) => tm -> tm -> Plan -> PlanM Plan
+unify l r p =
+  case Unify.mgu (pBindings p) l r of
+    Right bs' -> return p { pBindings = bs' }
+    Left _    -> mzero
 
-zonk :: Unify.Zonk tm => tm -> PlanM tm
-zonk tm =
-  do bs <- getBinds
-     case Unify.zonk bs tm of
-       Right tm' -> return tm'
-       Left _    -> mzero
+zonk :: Unify.Zonk tm => Plan -> tm -> PlanM tm
+zonk Plan { .. } tm =
+  case Unify.zonk pBindings tm of
+    Right tm' -> return tm'
+    Left _    -> mzero
 
 dbg :: Show a => String -> a -> PlanM ()
 dbg l a = traceM (l ++ ": " ++ show a)
 
-zonkDbg :: (PP a, Unify.Zonk a) => String -> a -> PlanM ()
-zonkDbg l a = do a' <- zonk a
-                 traceM (show (hang (text l <> char ':') 2 (pp a')))
+zonkDbg :: (PP a, Unify.Zonk a) => Plan -> String -> a -> PlanM ()
+zonkDbg p l a = do a' <- zonk p a
+                   traceM (show (hang (text l <> char ':') 2 (pp a')))
 
 
 -- Planner ---------------------------------------------------------------------
 
 -- | Solve a series of goals.
-solveGoals :: Flaws -> PlanM ()
+solveGoals :: Plan -> Flaws -> Flaws -> PlanM Plan
 
-solveGoals (FOpenCond g : flaws')
+solveGoals p (FOpenCond g : flaws') ds
 
-  | PNeq p q <- gGoal g =
+  | PNeq x y <- gGoal g =
     do --zonkDbg "Inequality" (gGoal g)
-       (p',q') <- zonk (p,q)
-       if ground p' && ground q'
+       (x',y') <- zonk p (x,y)
+       if ground x' && ground y'
 
           -- make sure that the two are different, and solve the goal
-          then do guard (p' /= q')
-                  solveGoals flaws'
+          then do guard (x' /= y')
+                  solveGoals p flaws' ds
 
           -- not enough information, defer the goal
-          else    solveGoals (flaws' ++ [FOpenCond g])
+          else    solveGoals p flaws' (FOpenCond g : ds)
 
   | otherwise =
     do -- zonkDbg "Open Condition" g
-       newFlaws <- discoveryAndResolution (causalPlanning g)
-       guard =<< fromPlan planConsistent
-       solveGoals (flaws' ++ newFlaws)
+       (p',newFlaws) <- discoveryAndResolution (causalPlanning p g)
+       solveGoals p' (flaws' ++ newFlaws) ds
 
-solveGoals (FMotivation ref : flaws') =
-  do frame <- lookupFrame ref
+solveGoals p (FMotivation ref : flaws') ds =
+  do frame <- lookupFrame p ref
      -- zonkDbg "Motivation Flaw" frame
-     newFlaws <- discoveryAndResolution (motivationPlanning ref frame)
-     guard =<< fromPlan planConsistent
-     solveGoals (flaws' ++ newFlaws)
+     (p',newFlaws) <- discoveryAndResolution (motivationPlanning p ref frame)
+     solveGoals p' (flaws' ++ newFlaws) ds
 
-solveGoals (FIntent step ref : flaws') =
-  do frame <- lookupFrame ref
+solveGoals p (FIntent step ref : flaws') ds =
+  do frame <- lookupFrame p ref
      -- zonkDbg "Intent Flaw" (step,fGoal frame)
-     newFlaws <- frameSelection step ref frame
-     solveGoals (flaws' ++ newFlaws)
+     (p',newFlaws) <- frameSelection p step ref frame
+     solveGoals p' (flaws' ++ newFlaws) ds
 
-solveGoals [] =
-     return ()
+-- all goals solved, no deferred goals
+solveGoals p [] [] = 
+     return p
+
+-- deferred goals remain, switch to working on them
+solveGoals p [] ds =
+     solveGoals p (reverse ds) []
 
 
 -- Threat Resolution -----------------------------------------------------------
 
-discoveryAndResolution :: PlanM (Bool,Step,Flaws) -> PlanM Flaws
+discoveryAndResolution :: PlanM (Bool,Step,Plan,Flaws) -> PlanM (Plan,Flaws)
 discoveryAndResolution body =
-  do (isNew,s_add,flaws) <- body
+  do (isNew,s_add,p,flaws) <- body
 
-     frameFlaws <- if isNew
-                      then discoverFrameFlaws s_add
-                      else return mempty
+     (p1,frameFlaws) <- if isNew
+                           then discoverFrameFlaws s_add p
+                           else return (p,mempty)
 
-     intentFlaws <- discoverIntentFlaws s_add
+     intentFlaws <- discoverIntentFlaws s_add p1
 
-     resolveCausalThreats
+     p2 <- resolveCausalThreats p1
 
-     return (flaws `mappend` frameFlaws `mappend` intentFlaws)
+     guard (planConsistent p2)
+
+     return (p2, flaws `mappend` frameFlaws `mappend` intentFlaws)
 
 
 -- | Given a step that is new to the plan, derive frames of commitment for each
@@ -212,38 +190,38 @@ discoveryAndResolution body =
 --
 --  * Should intent effects be considered when producing a frame of commitment?
 --
-discoverFrameFlaws :: Step -> PlanM Flaws
-discoverFrameFlaws s_add = discoverEffectFrame `mplus` noFrame
+discoverFrameFlaws :: Step -> Plan -> PlanM (Plan,Flaws)
+discoverFrameFlaws s_add p = discoverEffectFrame `mplus` noFrame
   where
   discoverEffectFrame =
-    do node <- getNode s_add
+    do node <- getNode p s_add
        let Action { .. } = action node
        guard (not (null aActors))
-       msum [ tryEffectFrame aActors p | p <- aEffect ]
+       msum [ tryEffectFrame aActors eff | eff <- aEffect ]
 
-  tryEffectFrame actors p =
-    do refs <- updatePlan (addFrames (map mkFrame actors))
-       return [ FMotivation ref | ref <- refs ]
+  tryEffectFrame actors eff =
+    do let (p',refs) = addFrames (map mkFrame actors) p
+       return (p', [ FMotivation ref | ref <- refs ])
     where
     mkFrame a = Frame { fSteps      = Set.empty
                       , fActor      = a
-                      , fGoal       = p
+                      , fGoal       = eff
                       , fFinal      = s_add
                       , fMotivation = Nothing
                       }
 
   addFrames frames plan = T.mapAccumL (flip addFrame) plan frames
 
-  noFrame = return []
+  noFrame = return (p, [])
 
 
 -- | Find all frames of commitment that could be used to explain s_add, and for
 -- each one, emit an intent flaw.
-discoverIntentFlaws :: Step -> PlanM Flaws
-discoverIntentFlaws s_add =
+discoverIntentFlaws :: Step -> Plan -> PlanM Flaws
+discoverIntentFlaws s_add p =
   do -- first, find all frames that have a step that has an effect of s_add as a
      -- precondition
-     cond1 <- fromPlan (sameIntent s_add)
+     let cond1 = sameIntent s_add p
 
      -- XXX cond1 only represents half of the picture when generating intent
      -- flaws
@@ -252,67 +230,63 @@ discoverIntentFlaws s_add =
      return [ FIntent s_add ref | ref <- Set.toList cond1 ]
 
 
-resolveCausalThreats :: PlanM ()
-resolveCausalThreats  =
-  do threats <- causalThreats
-
-     unless (null threats) $
-       do forM_ threats $ \ (act,Link l _ r) ->
-            do f <- msum [ do guard (r /= Finish)
-                              return (r `isBefore` act)
-                         , do guard (l /= Start)
-                              return (act `isBefore` l)
-                         ]
-               updatePlan_ f
+resolveCausalThreats :: Plan -> PlanM Plan
+resolveCausalThreats p
+  | null threats = return p
+  | otherwise    = do funs <- forM threats $ \ (act,Link l _ r) ->
+                                msum [ do guard (r /= Finish)
+                                          return (r `isBefore` act)
+                                     , do guard (l /= Start)
+                                          return (act `isBefore` l)
+                                     ]
+                      return (foldr ($) p funs)
+  where
+  threats = causalThreats p
 
 -- | Discover causal threats in the plan.
-causalThreats :: PlanM [(Step,Link)]
-causalThreats  =
-  do as    <- fromPlan getActions
-     links <- fromPlan getLinks
-     bs    <- getBinds
+causalThreats :: Plan -> [(Step,Link)]
+causalThreats p @ Plan { .. } =
+  [ (act,link) | (act,node) <- as
+               , link       <- Set.toList links
+               , isThreatened act (effects node) link ]
+  where
+  as    = getActions p
+  links = getLinks p
 
-     let unifies p q = case Unify.mgu bs p q of
-                         Right {} -> True
-                         Left {}  -> False
+  unifies p q = case Unify.mgu pBindings p q of
+                  Right {} -> True
+                  Left {}  -> False
 
-         isThreatened act es (Link l p r) =
-           l /= act &&
-           r /= act &&
-           any (unifies (negPred p)) es
+  isThreatened act es (Link l p r) =
+    l /= act &&
+    r /= act &&
+    any (unifies (negPred p)) es
 
-         threats = [ (act,link) | (act,node) <- as
-                                , link       <- Set.toList links
-                                , isThreatened act (effects node) link ]
-
-     return threats
 
 
 -- Operator Selection ----------------------------------------------------------
 
-operatorSelection :: Pred -> PlanM (Bool,Step,Flaws)
-operatorSelection goal =
-  msum [ do res <- byAssumption goal
-            return (False,res,mempty)
-       , do (s_add,flaws) <- byNewStep goal
-            return (True,s_add,flaws)
+operatorSelection :: Plan -> Pred -> PlanM (Bool,Step,Plan,Flaws)
+operatorSelection p goal =
+  msum [ do (p',res) <- byAssumption p goal
+            return (False,res,p',mempty)
+       , do (s_add,p',flaws) <- byNewStep p goal
+            return (True,s_add,p',flaws)
        ]
 
 
 -- | Resolve an open condition by reusing an exising step in the plan.
-byAssumption :: Pred -> PlanM Step
-byAssumption goal =
-  do candidates <- fromPlan getActions
-     msum (map tryAssump candidates)
+byAssumption :: Plan -> Pred -> PlanM (Plan,Step)
+byAssumption p goal = msum (map tryAssump (getActions p))
   where
   tryAssump (act,node) =
-    do msum [ unify goal q | q <- effects node ]
-       return act
+    do p' <- msum [ unify goal q p | q <- effects node ]
+       return (p',act)
 
 
 -- | Resolve an open condition by adding a new step to the plan.
-byNewStep :: Pred -> PlanM (Step,Flaws)
-byNewStep goal =
+byNewStep :: Plan -> Pred -> PlanM (Step,Plan,Flaws)
+byNewStep p @ Plan { .. } goal =
   do dom <- getDomain
      msum (map tryInst (T.lookup goal dom))
   where
@@ -320,90 +294,92 @@ byNewStep goal =
     do (act,op) <- freshInst s
 
        -- find an effect that matches the goal
-       env <- getBinds
-       case mapMaybe (isRelevant env) (aEffect op) of
-         env' : _ -> setBinds env'
-         []       -> mzero
+       bs' <- case mapMaybe isRelevant (aEffect op) of
+                env' : _ -> return env'
+                []       -> mzero
 
-       flaws <- updatePlan (addAction act op)
-       updatePlan_ ( (Start `isBefore` act) . (act `isBefore` Finish) )
+       let (p1,flaws) = addAction act op
+                      $ (Start `isBefore` act)
+                      $ (act   `isBefore` Finish)
+                        p
 
        -- when constraints exist, examine the facts to variable binding choices
-       useConstraints act (aConstraints op)
+       p2 <- useConstraints act (aConstraints op) p1
 
        -- zonkDbg "New step" act
 
-       return (act,flaws)
+       return (act,p1,flaws)
 
-  isRelevant env q =
-    case Unify.mgu env goal q of
+  isRelevant q =
+    case Unify.mgu pBindings goal q of
       Right env' -> Just env'
       Left _     -> Nothing
 
 
-useConstraints :: Step -> [Pred] -> PlanM ()
-useConstraints from ps =
+useConstraints :: Step -> [Pred] -> Plan -> PlanM Plan
+useConstraints from cs p0 =
   do facts <- getFacts
-     loop facts ps
+     loop facts cs p0
   where
-  loop facts (p:ps) = msum [ do unify p atom
-                                loop facts ps
-                           | atom <- T.lookup p facts ]
-  loop _     []     = return ()
+  loop facts (c:cs) p = msum [ do p' <- unify c atom p
+                                  loop facts cs p'
+                             | atom <- T.lookup c facts ]
+  loop _     []     p = return p
 
 
 -- Causal Planning -------------------------------------------------------------
 
-causalPlanning :: Goal -> PlanM (Bool,Step,Flaws)
-causalPlanning Goal { .. } =
-  do res@(isNew,s_add,flaws) <- operatorSelection gGoal
+causalPlanning :: Plan -> Goal -> PlanM (Bool,Step,Plan,Flaws)
+causalPlanning p Goal { .. } =
+  do (isNew,s_add,p1,flaws) <- operatorSelection p gGoal
 
-     updatePlan_ ( (s_add `isBefore` gSource)
-                 . addLink (Link s_add gGoal gSource) )
+     let p2 = (s_add `isBefore` gSource)
+            $ addLink (Link s_add gGoal gSource)
+              p1
 
-     return res
+     return (isNew,s_add,p2,flaws)
 
 
 -- Motivation Planning ---------------------------------------------------------
 
 -- | A frame of commitment that currently lacks a motivating step.
-motivationPlanning :: FrameRef -> Frame -> PlanM (Bool,Step,Flaws)
-motivationPlanning ref c @ Frame { .. } =
+motivationPlanning :: Plan -> FrameRef -> Frame -> PlanM (Bool,Step,Plan,Flaws)
+motivationPlanning p ref c @ Frame { .. } =
   do let goal = PIntends fActor fGoal
 
-     res @ (isNew,s_add,flaws) <- operatorSelection goal
+     (isNew,s_add,p1,flaws) <- operatorSelection p goal
 
      let link = Link s_add fGoal fFinal
 
-     updatePlan_ ( (s_add `isBeforeFrame` c)
-                 . addLink link
-                 . modifyFrame ref (\ f -> f { fMotivation = Just s_add })
-                 )
+     let p2 = (s_add `isBeforeFrame` c)
+            $ addLink link
+            $ modifyFrame ref (\ f -> f { fMotivation = Just s_add })
+              p1
 
-     return res
+     return (isNew,s_add,p2,flaws)
 
 
 -- Intent Planning -------------------------------------------------------------
 
-frameSelection :: Step -> FrameRef -> Frame -> PlanM Flaws
-frameSelection step ref frame =
+frameSelection :: Plan -> Step -> FrameRef -> Frame -> PlanM (Plan,Flaws)
+frameSelection p step ref frame =
   msum [ do motivation <- case fMotivation frame of
                             Just s  -> return s
                             Nothing -> mzero
 
             -- add the step to the frame, and order it after the motivating
             -- step
-            updatePlan_ ( modifyFrame ref addStep
-                        . (motivation `isBefore` step) )
+            let p' = modifyFrame ref addStep
+                   $ (motivation `isBefore` step) p
 
             -- XXX order frames WRT each other
 
             -- XXX generate intent flaws for causal links with the same
             -- character that occur before the new step
 
-            return []
+            return (p',[])
 
-       ,    return []
+       ,    return (p,[])
        ]
   where
   addStep frame = frame { fSteps = Set.insert step (fSteps frame) }
