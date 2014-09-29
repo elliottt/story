@@ -138,12 +138,14 @@ lookupVar i = UnifyM $
      return (Map.lookup i (rwEnv rw))
 
 bindVar :: Var -> Term -> UnifyM ()
+
 bindVar i tm =
   do tm' <- zonk' tm
      case tm' of
        TVar j | i == j -> return ()
-       _               -> UnifyM $ do rw <- get
-                                      set rw { rwEnv = Map.insert i tm' (rwEnv rw) }
+       _               -> UnifyM $
+         do rw <- get
+            set rw { rwEnv = Map.insert i tm' (rwEnv rw) }
 
 
 -- Primitive Unification -------------------------------------------------------
