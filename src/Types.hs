@@ -9,6 +9,7 @@ import Pretty
 
 import           Control.Monad ( guard )
 import           Data.Function ( on )
+import           Data.Foldable ( foldMap )
 import           Data.String ( IsString(..) )
 import qualified Data.Set as Set
 
@@ -40,11 +41,8 @@ data Term = TVar Var
 instance IsString Term where
   fromString = TCon
 
-ground :: Term -> Bool
-ground TVar {}   = False
-ground TGen {}   = True
-ground TCon {}   = True
-ground (TPred p) = all ground (pArgs p)
+instance Num Term where
+  fromInteger n = TVar (Var Nothing (fromInteger n))
 
 data Var = Var { varDisplay :: Maybe String
                , varIndex   :: Int
@@ -75,6 +73,33 @@ emptyAction  = Action { aName        = ""
                       , aConstraints = []
                       , aPrecond     = []
                       , aEffect      = [] }
+
+
+-- Variables -------------------------------------------------------------------
+
+isGround :: Vars a => a -> Bool
+isGround a = Set.null (vars a)
+
+class Vars a where
+  vars :: a -> Set.Set Var
+
+instance Vars a => Vars [a] where
+  vars = foldMap vars
+
+instance Vars a => Vars (Set.Set a) where
+  vars = foldMap vars
+
+instance Vars a => Vars (Maybe a) where
+  vars = foldMap vars
+
+instance Vars Pred where
+  vars Pred { .. } = vars pArgs
+
+instance Vars Term where
+  vars (TVar  v) = Set.singleton v
+  vars (TPred p) = vars p
+  vars (TGen  _) = Set.empty
+  vars (TCon  _) = Set.empty
 
 
 -- Schemas ---------------------------------------------------------------------

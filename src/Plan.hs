@@ -1,10 +1,11 @@
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 
 module Plan where
 
 import FloydWarshall ( transitiveClosure )
 import Pretty
-import Unify ( Error, Env, Zonk(..), zonk, match )
+import Unify ( Error, Binds, emptyBinds, Zonk(..), zonk, match )
 import Types
 
 import           Control.Applicative ( (<$>), (<*>) )
@@ -13,16 +14,18 @@ import           Data.Either ( isRight )
 import qualified Data.Foldable as F
 import qualified Data.Graph as Graph
 import qualified Data.Graph.SCC as SCC
-import           Data.List ( sortBy )
+import           Data.List ( sortBy, partition )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+
+import Debug.Trace
 
 
 -- Types -----------------------------------------------------------------------
 
 type FrameRef = Int
 
-data Plan = Plan { pBindings :: Env
+data Plan = Plan { pBindings :: Binds
                    -- ^ Current set of variable bindings
                  , pNodes    :: Map.Map Step Node
                    -- ^ Instantiated actions, and their dependencies
@@ -66,26 +69,26 @@ planConsistent  = ordsConsistent
 initialPlan :: Assumps -> Goals -> (Plan,Flaws)
 initialPlan as gs = ((Start `isBefore` Finish) psFinish, flaws)
   where
-  emptyPlan        = Plan { pBindings = Map.empty
+  emptyPlan        = Plan { pBindings = emptyBinds
                           , pNodes    = Map.empty
                           , pLinks    = Set.empty
                           , pFrames   = Map.empty
                           }
 
-  (psStart,_)      = addAction Start emptyAction { aName   = "<Start>"
-                                                 , aEffect = as
-                                                 } emptyPlan
+  (psStart,_,_)      = addAction Start emptyAction { aName   = "<Start>"
+                                                   , aEffect = as
+                                                   } emptyPlan
 
-  (psFinish,flaws) = addAction Finish emptyAction { aName     = "<Finish>"
-                                                  , aPrecond  = gs
-                                                  } psStart
+  (psFinish,_,flaws) = addAction Finish emptyAction { aName     = "<Finish>"
+                                                    , aPrecond  = gs
+                                                    } psStart
 
 -- | Retrieve variable bindings from the plan.
-getBindings :: Plan -> Env
+getBindings :: Plan -> Binds
 getBindings  = pBindings
 
 -- | Set variable bindings in the plan.
-setBindings :: Env -> Plan -> Plan
+setBindings :: Binds -> Plan -> Plan
 setBindings env p = p { pBindings = env }
 
 getActions :: Plan -> [(Step,Node)]
@@ -116,15 +119,22 @@ modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 -- | Add an action, with its instantiation, to the plan state.  All
 -- preconditions of the action will be considered goals, and appended to the
 -- agenda.
-addAction :: Step -> Action -> Plan -> (Plan,Flaws)
-addAction act oper p = (p',newGoals)
+addAction :: Step -> Action -> Plan -> (Plan,[(Term,Term)],Flaws)
+addAction act oper p = (p',ps,newGoals)
   where
   p' = p { pNodes = Map.insert act Node { nodeInst     = oper
                                         , nodeBefore   = Set.empty
                                         , nodeAfter    = Set.empty
                                         } (pNodes p) }
 
-  newGoals = [ FOpenCond (Goal act tm) | tm <- aPrecond oper ]
+  newGoals = [ FOpenCond (Goal act tm) | tm       <- goals ]
+  ps       = [ (a,b)                   | PNeq a b <- ns    ]
+
+  (ns,goals) = partition isNeq (aPrecond oper)
+
+
+  isNeq PNeq{} = True
+  isNeq _      = False
 
 -- | Record that action a comes before action b, in the plan state.
 isBefore :: Step -> Step -> Plan -> Plan
@@ -209,8 +219,11 @@ sameIntent s_add p
     -- the actors [A,B] will differ from [B,A]
     sameActors sid
 
-      | Just Node { nodeInst = act' } <- getAction sid p =
-        isRight (match (pBindings p) (aActors act) (aActors act'))
+      | Just Node { nodeInst = act' } <- getAction sid p
+      , not (null (aActors act')) =
+        case match (pBindings p) (aActors act) (aActors act') of
+          Right _  -> True
+          Left err -> traceShow err False
 
       | otherwise =
         False

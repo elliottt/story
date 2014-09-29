@@ -25,7 +25,7 @@ import           Debug.Trace
 
 ipocl :: Domain -> Assumps -> Goals -> Maybe [Step]
 ipocl d as gs = runPlanM as d $
-  do p' <- solveGoals p flaws []
+  do p' <- solveGoals p flaws
      -- XXX require that there are no orphans
      zonk p' (orderedActions p')
   where
@@ -121,46 +121,31 @@ zonkDbg p l a = do a' <- zonk p a
 -- Planner ---------------------------------------------------------------------
 
 -- | Solve a series of goals.
-solveGoals :: Plan -> Flaws -> Flaws -> PlanM Plan
+solveGoals :: Plan -> Flaws -> PlanM Plan
 
-solveGoals p (FOpenCond g : flaws') ds
+solveGoals p (FOpenCond g : flaws) =
+  do zonkDbg p "Open Condition" g
+     (p',newFlaws) <- discoveryAndResolution (causalPlanning p g)
+     dbg "newFlaws" (null newFlaws)
+     solveGoals p' (flaws ++ newFlaws)
 
-  | PNeq x y <- gGoal g =
-    do --zonkDbg "Inequality" (gGoal g)
-       (x',y') <- zonk p (x,y)
-       if ground x' && ground y'
-
-          -- make sure that the two are different, and solve the goal
-          then do guard (x' /= y')
-                  solveGoals p flaws' ds
-
-          -- not enough information, defer the goal
-          else    solveGoals p flaws' (FOpenCond g : ds)
-
-  | otherwise =
-    do -- zonkDbg "Open Condition" g
-       (p',newFlaws) <- discoveryAndResolution (causalPlanning p g)
-       solveGoals p' (flaws' ++ newFlaws) ds
-
-solveGoals p (FMotivation ref : flaws') ds =
+solveGoals p (FMotivation ref : flaws) =
   do frame <- lookupFrame p ref
-     -- zonkDbg "Motivation Flaw" frame
+     zonkDbg p "Motivation Flaw" frame
      (p',newFlaws) <- discoveryAndResolution (motivationPlanning p ref frame)
-     solveGoals p' (flaws' ++ newFlaws) ds
+     dbg "newFlaws" newFlaws
+     solveGoals p' (flaws ++ newFlaws)
 
-solveGoals p (FIntent step ref : flaws') ds =
+solveGoals p (FIntent step ref : flaws) =
   do frame <- lookupFrame p ref
-     -- zonkDbg "Intent Flaw" (step,fGoal frame)
+     zonkDbg p "Intent Flaw" (step,fGoal frame)
      (p',newFlaws) <- frameSelection p step ref frame
-     solveGoals p' (flaws' ++ newFlaws) ds
+     dbg "flaws" (newFlaws,flaws)
+     solveGoals p' (flaws ++ newFlaws)
 
--- all goals solved, no deferred goals
-solveGoals p [] [] = 
+solveGoals p [] =
+  do dbg "DONE" ()
      return p
-
--- deferred goals remain, switch to working on them
-solveGoals p [] ds =
-     solveGoals p (reverse ds) []
 
 
 -- Threat Resolution -----------------------------------------------------------
@@ -168,6 +153,8 @@ solveGoals p [] ds =
 discoveryAndResolution :: PlanM (Bool,Step,Plan,Flaws) -> PlanM (Plan,Flaws)
 discoveryAndResolution body =
   do (isNew,s_add,p,flaws) <- body
+
+     zonkDbg p "s_add" s_add
 
      (p1,frameFlaws) <- if isNew
                            then discoverFrameFlaws s_add p
@@ -179,7 +166,10 @@ discoveryAndResolution body =
 
      guard (planConsistent p2)
 
-     return (p2, flaws `mappend` frameFlaws `mappend` intentFlaws)
+     dbg "consistent" ()
+     dbg "intentFlaws" intentFlaws
+
+     return (p2, flaws ++ frameFlaws ++ intentFlaws)
 
 
 -- | Given a step that is new to the plan, derive frames of commitment for each
@@ -281,37 +271,43 @@ byAssumption p goal = msum (map tryAssump (getActions p))
   where
   tryAssump (act,node) =
     do p' <- msum [ unify goal q p | q <- effects node ]
+       zonkDbg p' "existing" act
        return (p',act)
 
 
 -- | Resolve an open condition by adding a new step to the plan.
 byNewStep :: Plan -> Pred -> PlanM (Step,Plan,Flaws)
-byNewStep p @ Plan { .. } goal =
+byNewStep p goal =
   do dom <- getDomain
      msum (map tryInst (T.lookup goal dom))
   where
   tryInst s =
-    do (act,op) <- freshInst s
+    do dbg "new" ()
+       (act,op) <- freshInst s
 
        -- find an effect that matches the goal
        bs' <- case mapMaybe isRelevant (aEffect op) of
                 env' : _ -> return env'
                 []       -> mzero
 
-       let (p1,flaws) = addAction act op
-                      $ (Start `isBefore` act)
-                      $ (act   `isBefore` Finish)
-                        p
+       let (p1,ns,flaws) = addAction act op
+                         $ (Start `isBefore` act)
+                         $ (act   `isBefore` Finish)
+                           p
+
+       dbg "before" ()
+       dbg "ns" ns
+       p2 <- case Unify.neqs (pBindings p1) ns of
+               Right bs -> return p1 { pBindings = bs }
+               Left _   -> mzero
 
        -- when constraints exist, examine the facts to variable binding choices
-       p2 <- useConstraints act (aConstraints op) p1
+       p3 <- useConstraints act (aConstraints op) p2
 
-       -- zonkDbg "New step" act
-
-       return (act,p1,flaws)
+       return (act,p2,flaws)
 
   isRelevant q =
-    case Unify.mgu pBindings goal q of
+    case Unify.mgu (pBindings p) goal q of
       Right env' -> Just env'
       Left _     -> Nothing
 
@@ -465,9 +461,9 @@ testDomain =
     Action { aName        = "threaten"
            , aActors      = [ monster ]
            , aHappening   = True
-           , aConstraints = [ Pred True "monster"   [ monster ]
+           , aConstraints = [ {- Pred True "monster"   [ monster ]
                             , Pred True "character" [ char    ]
-                            , Pred True "place"     [ place   ]
+                            , Pred True "place"     [ place   ] -}
                             ]
            , aPrecond     = [ PNeq char monster
                             , Pred True "at"    [ monster, place ]
@@ -482,9 +478,9 @@ testDomain =
     Action { aName        = "slay"
            , aActors      = [ char ]
            , aHappening   = False
-           , aConstraints = [ Pred True "character" [ char    ]
+           , aConstraints = [ {- Pred True "character" [ char    ]
                             , Pred True "monster"   [ monster ]
-                            , Pred True "place"     [ place   ]
+                            , Pred True "place"     [ place   ] -}
                             ]
            , aPrecond     = [ PNeq char monster
                             , Pred True "at"    [ monster, place ]
@@ -506,8 +502,6 @@ testDomain =
            , aPrecond     = [ PNeq place newPlace
                             , Pred True "at"    [ char, place ]
                             , Pred True "alive" [ char        ]
-                            , Pred True "place" [ place ]
-                            , Pred True "place" [ newPlace ]
                             ]
            , aEffect      = [ Pred False "at" [ char, place ]
                             , Pred True  "at" [ char, newPlace ]
@@ -517,9 +511,8 @@ testDomain =
 
 
 testAssumps =
-  [ Pred True "place"     [ "Forest" ]
+  [ Pred True "place"     [ "Castle" ]
   , Pred True "place"     [ "Castle" ]
-  , Pred True "place"     [ "Bridge" ]
   , Pred True "character" [ "Knight" ]
   , Pred True "monster"   [ "Dragon" ]
   , Pred True "alive"     [ "Knight" ]
@@ -533,8 +526,7 @@ testAssumps =
 -- XXX swapping the order of these two goals makes it seem like the planner
 -- won't terminate
 testGoals =
-  [ Pred True  "at"    [ "Dragon", "Bridge" ]
-  , Pred False "alive" [ "Dragon" ]
+  [ Pred False "alive" [ "Dragon" ]
   ]
 
 test :: IO ()

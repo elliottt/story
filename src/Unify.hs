@@ -3,8 +3,11 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 
 module Unify (
-    Env
+    Binds()
+  , emptyBinds
+  , Constraint(..)
   , Error
+  , neq, neqs
   , Zonk(..), zonk
   , Unify(..), mgu, match
   ) where
@@ -19,36 +22,85 @@ import qualified Data.Set as Set
 import           Data.Traversable ( traverse )
 import           MonadLib
 
+import Debug.Trace
+
 
 -- External Interface ----------------------------------------------------------
 
--- | Variable environment.
-type Env = Map.Map Var Term
+data Binds = Binds { bEnv         :: Env
+                     -- ^ Existing bindings, established by unification
+                   , bConstraints :: [Constraint]
+                     -- ^ Currently unsatisfied constraints
+                   } deriving (Show)
+
+emptyBinds :: Binds
+emptyBinds  = Binds { bEnv = Map.empty, bConstraints = [] }
+
 
 data Error = UnificationFailed
            | MatchingFailed
-           | OccursCheckFailed Term Term
+           | OccursCheckFailed Var Env (Set.Set Var)
+           | InvalidConstraint [Constraint]
              deriving (Show)
 
 instance PP Error where
   pp e = text (show e)
 
-mgu :: Unify a => Env -> a -> a -> Either Error Env
-mgu env a a' = case runUnifyM env (mgu' a a') of
-                 Right (_,RW { .. }) -> Right rwEnv
-                 Left err            -> Left err
+neq :: Binds -> Term -> Term -> Either Error Binds
+neq bs a b = neqs bs [(a,b)]
+
+neqs :: Binds -> [(Term,Term)] -> Either Error Binds
+neqs Binds { .. } ts =
+  case runUnifyM bEnv (checkConstraints [ CNeq a b | (a,b) <- ts ]) of
+    Right (cs,_) -> Right Binds { bEnv = bEnv, bConstraints = cs ++ bConstraints }
+    Left err     -> Left err
+
+mgu :: Unify a => Binds -> a -> a -> Either Error Binds
+mgu bs a a' = checkUnifyM bs (mgu' a a')
 
 -- | Matching unification, allowing variables on the left to bind.
-match :: Unify a => Env -> a -> a -> Either Error Env
-match env a a' = case runUnifyM env (match' a a') of
-                   Right (_,RW { .. }) -> Right rwEnv
-                   Left err            -> Left err
+match :: Unify a => Binds -> a -> a -> Either Error Binds
+match bs a a' = checkUnifyM bs (match' a a')
 
 -- | Remove variables from term.
-zonk :: Zonk a => Env -> a -> Either Error a
-zonk env a = case runUnifyM env (zonk' a) of
-               Right (a',_) -> Right a'
-               Left err     -> Left err
+zonk :: Zonk a => Binds -> a -> Either Error a
+zonk Binds { .. } a =
+  case runUnifyM bEnv (zonk' a) of
+    Right (a',_) -> Right a'
+    Left err     -> Left err
+
+-- Constraints -----------------------------------------------------------------
+
+data Constraint = CNeq Term Term
+                  deriving (Show,Eq,Ord)
+
+instance Vars Constraint where
+  vars (CNeq p q) = Set.union (vars p) (vars q)
+
+instance Zonk Constraint where
+  zonk' (CNeq p q) =
+    do p' <- zonk' p
+       q' <- zonk' q
+       return (CNeq p' q')
+
+-- | Zonk constraints, then validate any ground constraints.
+checkConstraints :: [Constraint] -> UnifyM [Constraint]
+checkConstraints cs =
+  do cs' <- traverse zonk' cs
+     let (errs,rest) = splitConstraints cs'
+
+     unless (null errs) (raise (InvalidConstraint errs))
+
+     return rest
+
+-- | Split constraints into two lists, violated and un-ground.  Any constraints
+-- that are valid are removed in the process
+splitConstraints :: [Constraint] -> ([Constraint], [Constraint])
+splitConstraints  = foldl check ([],[])
+  where
+  check (errs,rest) c@(CNeq a b) | a == b     = (c:errs,  rest)
+                                 | isGround c = (  errs,  rest)
+                                 | otherwise  = (  errs,c:rest)
 
 
 -- Unification Monad -----------------------------------------------------------
@@ -57,7 +109,10 @@ data RW = RW { rwSeen :: Set.Set Var
              , rwEnv  :: Env
              }
 
-newtype UnifyM a = UnifyM { unUnifyM :: StateT RW (ExceptionT Error Id) a
+-- | Variable environment.
+type Env = Map.Map Var Term
+
+newtype UnifyM a = UnifyM { unUnifyM :: StateT RW (ExceptionT Error Lift) a
                           } deriving (Functor,Applicative,Monad)
 
 instance ExceptionM UnifyM Error where
@@ -65,6 +120,17 @@ instance ExceptionM UnifyM Error where
 
 runUnifyM :: Env -> UnifyM a -> Either Error (a,RW)
 runUnifyM env m = runM (unUnifyM m) RW { rwSeen = Set.empty, rwEnv = env }
+
+checkUnifyM :: Binds -> UnifyM () -> Either Error Binds
+checkUnifyM bs m =
+  case runUnifyM (bEnv bs) body of
+    Right (cs,RW { .. }) -> Right Binds { bEnv = rwEnv, bConstraints = cs }
+    Left err             -> Left err
+
+  where
+  body = do m
+            checkConstraints (bConstraints bs)
+
 
 lookupVar :: Var -> UnifyM (Maybe Term)
 lookupVar i = UnifyM $
@@ -74,8 +140,10 @@ lookupVar i = UnifyM $
 bindVar :: Var -> Term -> UnifyM ()
 bindVar i tm =
   do tm' <- zonk' tm
-     UnifyM $ do rw  <- get
-                 set rw { rwEnv = Map.insert i tm' (rwEnv rw) }
+     case tm' of
+       TVar j | i == j -> return ()
+       _               -> UnifyM $ do rw <- get
+                                      set rw { rwEnv = Map.insert i tm' (rwEnv rw) }
 
 
 -- Primitive Unification -------------------------------------------------------
@@ -144,8 +212,12 @@ instance Zonk Term where
 
     TVar v ->
       do rw <- UnifyM get
+
+         when (v `Set.member` rwSeen rw) (raise (OccursCheckFailed v (rwEnv rw) (rwSeen rw)))
+
          case Map.lookup v (rwEnv rw) of
-           Just tm' -> zonk' tm'
+           Just tm' -> do UnifyM (set $! rw { rwSeen = Set.insert v (rwSeen rw) })
+                          zonk' tm'
            Nothing  -> return tm
 
     TPred p ->
