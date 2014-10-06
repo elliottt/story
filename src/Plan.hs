@@ -6,7 +6,8 @@ module Plan where
 import FloydWarshall ( transitiveClosure )
 import Pretty
 import Unify ( Error, Binds, emptyBinds, Zonk(..), zonk, match )
-import Types
+
+import           Planner.Types
 
 import           Control.Applicative ( (<$>), (<*>) )
 import           Data.Array.IArray ( (!) )

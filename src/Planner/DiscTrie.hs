@@ -1,20 +1,25 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
-module DiscTrie (
+module Planner.DiscTrie (
     DiscTrie()
-  , DiscTrie.empty
-  , DiscTrie.insert
-  , DiscTrie.lookup
+  , empty
+  , insert
+  , lookup
 
   , Facts
   , mkFacts
 
   , Domain
   , mkDomain
+  , isRigid
   ) where
 
-import           Types ( Pred(..), Term(..), Schema(..), Action(..) )
+import           Prelude hiding ( lookup )
+
+import           Planner.Types
+                     ( Pred(..), negPred, Term(..), Schema(..), Action(..) )
 
 import           Data.List ( foldl' )
 import qualified Data.Map.Strict as Map
@@ -50,16 +55,20 @@ type Facts = DiscTrie Pred
 mkFacts :: [Pred] -> Facts
 mkFacts  = foldl' addFact empty
   where
-  addFact t p = DiscTrie.insert p p t
+  addFact t p = insert p p t
 
 
-type Domain = DiscTrie (Schema Action)
+type Domain = DiscTrie (Schema (Pred,Action))
 
 mkDomain :: [Schema Action] -> Domain
 mkDomain  = foldl' addEffect empty
   where
   addEffect    dom op@(Forall _ act) = foldl' (addAction op) dom (aEffect act)
-  addAction op dom effect         = insert effect op dom
+  addAction op dom effect            = insert effect ((effect,) `fmap` op) dom
+
+-- | Does this predicate show up in the effects of any action in the domain?
+isRigid :: Domain -> Pred -> Bool
+isRigid dom p = null (lookup p dom ++ lookup (negPred p) dom)
 
 
 -- Nodes -----------------------------------------------------------------------

@@ -2,8 +2,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE DeriveFunctor #-}
 
-module Types where
+module Planner.Types where
 
 import Pretty
 
@@ -105,7 +106,7 @@ instance Vars Term where
 -- Schemas ---------------------------------------------------------------------
 
 data Schema a = Forall [Var] a
-                deriving (Show)
+                deriving (Show,Functor)
 
 forall :: [String] -> ([Term] -> a) -> Schema a
 forall ts mkBody = Forall vs (mkBody (map TGen vs))
@@ -122,6 +123,9 @@ instSchema ts (Forall vs a) =
 -- | Instantiate the bound variables in a term.
 class Inst a where
   inst :: [Term] -> a -> a
+
+instance (Inst a, Inst b) => Inst (a,b) where
+  inst as (a,b) = (inst as a, inst as b)
 
 instance Inst a => Inst [a] where
   inst as = map (inst as)

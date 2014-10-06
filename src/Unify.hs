@@ -12,8 +12,8 @@ module Unify (
   , Unify(..), mgu, match
   ) where
 
-import Pretty
-import Types
+import           Pretty
+import           Planner.Types
 
 import           Control.Applicative ( (<$>), Applicative(..) )
 import           Data.Graph ( SCC(..) )
