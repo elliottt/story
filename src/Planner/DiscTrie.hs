@@ -7,6 +7,7 @@ module Planner.DiscTrie (
   , empty
   , insert
   , lookup
+  , HasPath(..)
 
   , Facts
   , mkFacts

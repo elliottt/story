@@ -1,5 +1,7 @@
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ParallelListComp #-}
 
 module Planner.Constraints (
     BindConsts()
@@ -11,19 +13,20 @@ module Planner.Constraints (
     -- * Construction
   , empty
   , unify
-  , neq
   , constrain
-  , unknown
+  , known, unknown
   ) where
 
-import Planner.Monad
-import Planner.Types ( Effect(..), Pred(..), Term(..), Var(..) )
+import qualified Planner.DiscTrie as T
+import           Planner.Monad
+import           Planner.Types
+                     ( Effect(..), Constraint(..), Pred(..), Term(..), Var(..) )
 
-import           Control.Monad ( MonadPlus, guard, mzero )
+import           Control.Monad ( MonadPlus, guard, mzero, foldM )
 import           Data.Function ( on )
 import qualified Data.IntSet as ISet
 import qualified Data.IntMap.Strict as IMap
-import           Data.List ( sortBy )
+import           Data.List ( sortBy, transpose )
 import qualified Data.Set as Set
 
 
@@ -67,7 +70,7 @@ instance Unify Effect where
   unify (EIntends a p) (EIntends b q) cs = do cs' <- unify a b cs
                                               unify p q cs'
 
-  unify _              _              _  = mzero
+  unify _              _              _  =    mzero
 
 instance Unify Pred where
   unify (Pred n1 p1 ts1) (Pred n2 p2 ts2) cs = do guard (n1 == n2 && p1 == p2)
@@ -78,8 +81,8 @@ instance Unify Term where
   unify (TGen a) (TGen b) cs | a == b = return cs
 
   unify (TVar a) (TVar b) cs          = unify a b cs
-  unify (TVar v) (TCon t) cs          = constrain v [t] cs
-  unify (TCon t) (TVar v) cs          = constrain v [t] cs
+  unify (TVar v) (TCon t) cs          = known v [t] cs
+  unify (TCon t) (TVar v) cs          = known v [t] cs
 
   unify _        _        _           = mzero
 
@@ -151,13 +154,11 @@ neq l r bc =
                                  $ bcEquivClasses bcr }
 
 
-constrain :: Var -> [String] -> BindConsts -> PlanM BindConsts
-constrain v vals bc =
+-- | Add a variable with a known domain.
+known :: Var -> [String] -> BindConsts -> PlanM BindConsts
+known v vals bc =
   do let (rv,ecv,bcv) = getClass v bc
-         dom'         = mergeDomains (ecDomain ecv) (DomKnown (Set.fromList vals))
-
-     guard (not (nullDomain dom'))
-
+     dom' <- mergeDomains (ecDomain ecv) (DomKnown (Set.fromList vals))
      let ecv' = ecv { ecDomain = dom' }
      return bcv { bcEquivClasses = IMap.insert rv ecv' (bcEquivClasses bcv) }
 
@@ -189,6 +190,38 @@ getClass v @ Var { .. } bc @ BindConsts { .. } =
        in (bcNextRef,ec,bc')
 
 
+-- Constraints -----------------------------------------------------------------
+
+-- | Interpret a constraint.
+constrain :: Constraint -> BindConsts -> PlanM BindConsts
+
+-- inequalities only make sense between two variables
+constrain (CNeq (TVar a) (TVar b)) bc = neq a b bc
+constrain (CNeq _        _       ) _  = mzero
+
+constrain (CPred p) bc =
+  do facts <- getFacts
+     let insts = T.lookup p facts
+         dom   = predDomain p insts
+
+     foldM constrainDom bc dom
+
+  where
+  constrainDom cs (v,d) =
+    do let (ref,ec,cs') = getClass v cs
+       dom' <- mergeDomains (ecDomain ec) d
+       let ec' = ec { ecDomain = dom' }
+       return cs' { bcEquivClasses = IMap.insert ref ec' (bcEquivClasses cs') }
+
+
+predDomain :: Pred -> [Pred] -> [(Var,Domain)]
+predDomain p facts =
+  do (TVar v, ts) <- zip (pArgs p) (transpose (map pArgs facts))
+     let ts' = [ c | TCon c <- ts ]
+         dom | null ts'  = DomUnknown
+             | otherwise = DomKnown (Set.fromList ts')
+     return (v, dom)
+
 
 -- Equivalence Classes ---------------------------------------------------------
 
@@ -209,14 +242,12 @@ domainSize :: Domain -> Int
 domainSize (DomKnown d) = Set.size d
 domainSize DomUnknown   = maxBound
 
-nullDomain :: Domain -> Bool
-nullDomain (DomKnown d) = Set.null d
-nullDomain DomUnknown   = False
-
-mergeDomains :: Domain -> Domain -> Domain
-mergeDomains (DomKnown l) (DomKnown r) = DomKnown (l `Set.intersection` r)
-mergeDomains DomUnknown   r            = r
-mergeDomains l            _            = l
+mergeDomains :: MonadPlus m => Domain -> Domain -> m Domain
+mergeDomains (DomKnown l) (DomKnown r) = do let es = l `Set.intersection` r
+                                            guard (not (Set.null es))
+                                            return (DomKnown es)
+mergeDomains DomUnknown   r            =    return r
+mergeDomains l            _            =    return l
 
 
 type EquivClassRef = Int
@@ -235,8 +266,10 @@ mergeClasses l r =
   do guard $ ISet.null (ecMembers l `ISet.intersection` ecAvoid r)
           && ISet.null (ecMembers r `ISet.intersection` ecAvoid l)
 
+     dom' <- mergeDomains (ecDomain  l) (ecDomain  r)
+
      return EquivClass
-       { ecDomain  = mergeDomains (ecDomain  l) (ecDomain  r)
+       { ecDomain  = dom'
        , ecMembers = ISet.union   (ecMembers l) (ecMembers r)
        , ecAvoid   = ISet.union   (ecAvoid   l) (ecAvoid   r)
        }
@@ -316,16 +349,3 @@ restrictDom avoid d (r,ecr)
   | otherwise =
     do dom' <- domRemove d (ecDomain ecr)
        return (r,ecr { ecDomain = dom' })
-
-
--- Testing ---------------------------------------------------------------------
-
-Just test = runPlanM undefined undefined $
-  do cs1 <- constrain a ["x", "y", "z"] empty
-     cs2 <- constrain b ["x"]           cs1
-
-     neq a b cs2
-
-  where
-  a = Var (Just "a") 0
-  b = Var (Just "b") 1
