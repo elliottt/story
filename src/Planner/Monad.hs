@@ -14,7 +14,7 @@ module Planner.Monad (
   ) where
 
 import qualified Planner.DiscTrie as D
-import           Planner.Types ( Pred, Schema, Action )
+import           Planner.Types ( Effect, Schema, Action )
 
 import           Control.Applicative ( Applicative(..), Alternative(..) )
 import qualified Control.Exception as X
@@ -83,7 +83,7 @@ choose [a] = pure a
 choose as  = F.asum (map pure as)
 
 -- | Find Actions that have effects that may satisfy the given predicate.
-findAction :: Pred -> PlanM [Schema (Pred,Action)]
+findAction :: Effect -> PlanM [Schema (Effect,Action)]
 findAction p =
   do RW { .. } <- getRW
      return (D.lookup p rwDomain)

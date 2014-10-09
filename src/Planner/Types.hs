@@ -1,7 +1,6 @@
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE DeriveFunctor #-}
 
 module Planner.Types where
@@ -17,16 +16,18 @@ import qualified Data.Set as Set
 
 -- Terms -----------------------------------------------------------------------
 
-type Effect = Pred
+data Constraint = CPred Pred
+                | CNeq Term Term
+                  deriving (Show,Eq,Ord)
+
+data Effect = EPred Pred
+            | EIntends Actor Pred
+              deriving (Show,Eq,Ord)
 
 data Pred = Pred { pNeg  :: Bool
-                 , pSym  :: String 
+                 , pSym  :: String
                  , pArgs :: [Term]
                  } deriving (Show,Eq,Ord)
-
-pattern PIntends a p = Pred True "intends" [a, TPred p]
-
-pattern PNeq p q = Pred True "neq" [p,q]
 
 negPred :: Pred -> Pred
 negPred p = p { pNeg = not (pNeg p) }
@@ -36,7 +37,6 @@ type Type = Term
 data Term = TVar Var
           | TGen Var
           | TCon String
-          | TPred Pred
             deriving (Eq,Show,Ord)
 
 instance IsString Term where
@@ -62,7 +62,7 @@ type Actor = Term
 data Action = Action { aName        :: String
                      , aActors      :: [Actor]
                      , aHappening   :: Bool
-                     , aConstraints :: [Pred]
+                     , aConstraints :: [Constraint]
                      , aPrecond     :: [Pred]
                      , aEffect      :: [Effect]
                      } deriving (Show,Eq,Ord)
@@ -98,7 +98,6 @@ instance Vars Pred where
 
 instance Vars Term where
   vars (TVar  v) = Set.singleton v
-  vars (TPred p) = vars p
   vars (TGen  _) = Set.empty
   vars (TCon  _) = Set.empty
 
@@ -130,13 +129,20 @@ instance (Inst a, Inst b) => Inst (a,b) where
 instance Inst a => Inst [a] where
   inst as = map (inst as)
 
+instance Inst Constraint where
+  inst as (CPred p)  = CPred (inst as p)
+  inst as (CNeq a b) = CNeq (inst as a) (inst as b)
+
+instance Inst Effect where
+  inst as (EPred p)      = EPred (inst as p)
+  inst as (EIntends a p) = EIntends (inst as a) (inst as p)
+
 instance Inst Pred where
   inst as p = p { pArgs = inst as (pArgs p) }
 
 instance Inst Term where
-  inst as (TGen v)  = as !! varIndex v
-  inst as (TPred p) = TPred (inst as p)
-  inst _  tm        = tm
+  inst as (TGen v) = as !! varIndex v
+  inst _  tm       = tm
 
 instance Inst Action where
   inst as act = act { aActors      = inst as (aActors  act)
@@ -210,14 +216,21 @@ instance PP Pred where
           | otherwise = char '~'
 
 instance PP Term where
-  pp (TVar v)  = char '?' <> pp v
-  pp (TGen v)  =             pp v
-  pp (TCon c)  = text c
-  pp (TPred p) = pp p
+  pp (TVar v) = char '?' <> pp v
+  pp (TGen v) =             pp v
+  pp (TCon c) = text c
 
 instance PP Var where
   pp Var { varDisplay = Just str } = text str
   pp Var { varIndex   = ix       } = char 'v' <> int ix
+
+instance PP Constraint where
+  pp (CPred p)  = pp p
+  pp (CNeq a b) = pp a <+> text "<>" <+> pp b
+
+instance PP Effect where
+  pp (EPred p)      = pp p
+  pp (EIntends a p) = text "intends" <> parens (commas [pp a, pp p])
 
 instance PP Action where
   pp Action { .. } = text aName

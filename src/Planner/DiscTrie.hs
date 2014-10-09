@@ -19,33 +19,24 @@ module Planner.DiscTrie (
 import           Prelude hiding ( lookup )
 
 import           Planner.Types
-                     ( Pred(..), negPred, Term(..), Schema(..), Action(..) )
+                     ( Effect(..), Pred(..), negPred, Term(..), Schema(..)
+                     , Action(..) )
 
 import           Data.List ( foldl' )
 import qualified Data.Map.Strict as Map
-import           Data.Maybe ( fromMaybe )
 
 
-type DiscTrie a = Map.Map Sym (Node a)
+type DiscTrie a = Node a
 
 empty :: DiscTrie a
-empty  = Map.empty
+empty  = Node Map.empty []
 
-insert :: Pred -> a -> DiscTrie a -> DiscTrie a
-insert Pred { .. } a t = Map.alter update sym t
-  where
-  sym = SPred pNeg (length pArgs) pSym
+insert :: HasPath key => key -> a -> DiscTrie a -> DiscTrie a
+insert key a t = insertPath (toPath key) a t
 
-  update (Just node) = Just (insertTerms pArgs a node)
-  update Nothing     = Just (insertTerms pArgs a emptyNode)
 
-lookup :: Pred -> DiscTrie a -> [a]
-lookup Pred { .. } t =
-  case Map.lookup sym t of
-    Just node -> lookupTerms pArgs node
-    Nothing   -> []
-  where
-  sym = SPred pNeg (length pArgs) pSym
+lookup :: HasPath key => key -> DiscTrie a -> [a]
+lookup key = lookupPath (toPath key)
 
 
 -- Utilities -------------------------------------------------------------------
@@ -58,12 +49,13 @@ mkFacts  = foldl' addFact empty
   addFact t p = insert p p t
 
 
-type Domain = DiscTrie (Schema (Pred,Action))
+type Domain = DiscTrie (Schema (Effect,Action))
 
 mkDomain :: [Schema Action] -> Domain
 mkDomain  = foldl' addEffect empty
   where
   addEffect    dom op@(Forall _ act) = foldl' (addAction op) dom (aEffect act)
+
   addAction op dom effect            = insert effect ((effect,) `fmap` op) dom
 
 -- | Does this predicate show up in the effects of any action in the domain?
@@ -71,57 +63,72 @@ isRigid :: Domain -> Pred -> Bool
 isRigid dom p = null (lookup p dom ++ lookup (negPred p) dom)
 
 
--- Nodes -----------------------------------------------------------------------
+-- Tree Paths ------------------------------------------------------------------
+
+type Path = [Sym]
 
 data Sym = SPred Bool Int String
          | SCon String
+         | SVar
            deriving (Show,Eq,Ord)
 
--- | Produces a Nothing in the case that the term is a variable.
-isSym :: Term -> Maybe (Sym,[Term])
-isSym (TCon c)            = Just (SCon c, [])
-isSym (TPred Pred { .. }) = Just (SPred pNeg (length pArgs) pSym, pArgs)
-isSym TGen{}              = Nothing
-isSym TVar{}              = Nothing
+symExpect :: Sym -> Int
+symExpect (SPred _ n _) = n
+symExpect _             = 0
 
-data Node a = Node (Maybe (Node a)) (Map.Map Sym (Node a)) [a]
+class HasPath a where
+  toPath :: a -> Path
+
+instance HasPath a => HasPath [a] where
+  toPath = concatMap toPath
+
+instance HasPath Sym where
+  toPath = return
+
+instance HasPath Term where
+  toPath (TCon c) = [SCon c]
+  toPath (TGen _) = [SVar]
+  toPath (TVar _) = [SVar]
+
+instance HasPath Pred where
+  toPath (Pred n p ts) = SPred n (length ts) p : toPath ts
+
+instance HasPath Effect where
+  toPath (EPred p)      = toPath p
+  toPath (EIntends a p) = SPred True 2 "intends" : toPath a ++ toPath p
+
+
+-- Nodes -----------------------------------------------------------------------
+
+data Node a = Node (Map.Map Sym (Node a)) [a]
               deriving (Show)
 
-emptyNode :: Node a
-emptyNode  = Node Nothing Map.empty []
 
-insertTerms :: [Term] -> a -> Node a -> Node a
+insertPath :: Path -> a -> Node a -> Node a
 
-insertTerms (t:ts) a (Node mbStar m as) =
-  case isSym t of
-    Just (sym,args) -> Node mbStar (Map.alter (update args) sym m) as
-    Nothing         -> Node (Just (insertTerms ts a star)) m as
+insertPath (p:ps) a (Node m as) = Node (Map.alter update p m) as
   where
-  star                    = fromMaybe emptyNode mbStar
-  update args (Just node) = Just (insertTerms (args ++ ts) a node)
-  update args Nothing     = Just (insertTerms (args ++ ts) a emptyNode)
+  update (Just n) = Just (insertPath ps a n)
+  update Nothing  = Just (insertPath ps a empty)
 
-insertTerms [] a (Node mbStar m as) = Node mbStar m (a:as)
+insertPath [] a (Node m as) = Node m (a:as)
 
 
-lookupTerms :: [Term] -> Node a -> [a]
+lookupPath :: Path -> Node a -> [a]
+lookupPath (p:ps) n           = lookupSym p ps n
+lookupPath []     (Node _ as) = as
 
-lookupTerms (t:ts) node@(Node mbStar m _) = specific
+-- | Step one level during a lookup
+lookupSym :: Sym -> Path -> Node a -> [a]
+lookupSym SVar ps n          = concatMap (lookupPath ps) (dropPrefix 1 n)
+lookupSym s    ps (Node m _) = find ps s ++ find (drop (symExpect s) ps) SVar
   where
-
-  specific =
-    case isSym t of
-      Just (sym,args) -> maybe [] (lookupTerms ts) mbStar
-                      ++ maybe [] (lookupTerms (args ++ ts)) (Map.lookup sym m)
-      Nothing         -> concatMap (lookupTerms ts) (dropPrefix 1 node)
-
-lookupTerms [] (Node _ _ as) = as
+  find ps' k = maybe [] (lookupPath ps') (Map.lookup k m)
 
 dropPrefix :: Int -> Node a -> [Node a]
-dropPrefix 0 node = [node]
-dropPrefix n (Node mbStar m _) =
-  maybe [] (dropPrefix n') mbStar ++ concatMap f (Map.toList m)
+dropPrefix 0 node       = [node]
+dropPrefix n (Node m _) = concatMap f (Map.toList m)
   where
   n'                        = n - 1
   f (SPred _ arity _, node) = dropPrefix (n' + arity) node
-  f (_, node)               = dropPrefix n'           node
+  f (_, node)               = dropPrefix  n'          node
