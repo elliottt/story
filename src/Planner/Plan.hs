@@ -1,7 +1,7 @@
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Plan where
+module Planner.Plan where
 
 import FloydWarshall ( transitiveClosure )
 import Pretty

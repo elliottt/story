@@ -6,8 +6,8 @@
 
 module Planner.IPOCL where
 
+import           Planner.Plan
 import           Pretty ( PP(pp), pretty )
-import           Plan
 
 import qualified Planner.Constraints as C
 import           Planner.Debug

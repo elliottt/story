@@ -3,8 +3,8 @@ module Planner.Debug (
   , zonkDbg
   ) where
 
-import Plan
 import Planner.Constraints ( bindings )
+import Planner.Plan
 import Pretty
 
 import Debug.Trace
