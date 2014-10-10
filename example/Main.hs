@@ -80,8 +80,6 @@ testAssumps =
   , Pred True "scary"     [ "Dragon" ]
   ]
 
--- XXX swapping the order of these two goals makes it seem like the planner
--- won't terminate
 testGoals =
   [ Pred False "alive" [ "Dragon" ]
   , Pred True "at" [ "Dragon", "Bridge" ]
