@@ -223,7 +223,6 @@ operatorSelection p goal =
        , do (s_add,p',flaws) <- byNewStep p goal
             return (True,s_add,p',flaws)
 
-       ,    dbg "whoops" () >> empty
        ]
 
 
