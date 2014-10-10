@@ -25,7 +25,10 @@ import           Data.Typeable ( Typeable )
 
 -- External Interface ----------------------------------------------------------
 
-newtype PlanM a = PlanM { unPlanM :: forall r. RW -> r -> (RW -> a -> r) -> r }
+newtype PlanM a = PlanM { unPlanM :: forall r. RW
+                                            -> r
+                                            -> (RW -> a -> r -> r)
+                                            -> r }
 
 instance Functor PlanM where
   {-# INLINE fmap #-}
@@ -34,12 +37,12 @@ instance Functor PlanM where
 
 instance Applicative PlanM where
   {-# INLINE pure #-}
-  pure a = PlanM (\ s _ k -> k s a )
+  pure a = PlanM (\ s e k -> k s a e )
 
   {-# INLINE (<*>) #-}
-  f <*> x = PlanM $ \ s0 e k ->
-   unPlanM f s0 e $ \ s1 g   ->
-   unPlanM x s1 e $ \ s2 y   -> k s2 (g y)
+  f <*> x = PlanM  $ \ s0 e k  ->
+   unPlanM f s0 e  $ \ s1 g ef ->
+   unPlanM x s1 ef $ \ s2 y ex -> k s2 (g y) ex
 
 instance Alternative PlanM where
   {-# INLINE empty #-}
@@ -53,8 +56,8 @@ instance Monad PlanM where
   return = pure
 
   {-# INLINE (>>=) #-}
-  m >>= f = PlanM $ \ s  e k ->
-    unPlanM m s e $ \ s' a   -> unPlanM (f a) s' e k
+  m >>= f = PlanM $ \ s  e k  ->
+    unPlanM m s e $ \ s' a e' -> unPlanM (f a) s' e' k
 
 instance MonadPlus PlanM where
   {-# INLINE mzero #-}
@@ -67,8 +70,8 @@ instance MonadPlus PlanM where
 runPlanM :: D.Facts -> D.Domain -> PlanM a -> Maybe a
 runPlanM rwFacts rwDomain (PlanM f) = f rw Nothing final
   where
-  rw        = RW { rwNextVar = 0, .. }
-  final _ a = Just a
+  rw          = RW { rwNextVar = 0, .. }
+  final _ a _ = Just a
 
 -- | Generate a fresh variable index.
 freshVar :: PlanM Int
@@ -112,8 +115,8 @@ data RW = RW { rwNextVar :: !Int
 
 {-# INLINE getRW #-}
 getRW :: PlanM RW
-getRW  = PlanM (\s _ k -> k s s)
+getRW  = PlanM (\ s e k -> k s s e)
 
 {-# INLINE setRW #-}
 setRW :: RW -> PlanM ()
-setRW s = PlanM (\_ _ k -> k s ())
+setRW s = PlanM (\ _ e k -> k s () e)

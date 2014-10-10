@@ -14,16 +14,16 @@ testDomain =
     Action { aName        = "threaten"
            , aActors      = [ monster ]
            , aHappening   = True
-           , aConstraints = [ {- Pred True "monster"   [ monster ]
-                            , Pred True "character" [ char    ]
-                            , Pred True "place"     [ place   ] -}
+           , aConstraints = [ CPred $ Pred True "monster"   [ monster ]
+                            , CPred $ Pred True "character" [ char    ]
+                            , CPred $ Pred True "place"     [ place   ]
+                            , CNeq monster place
                             ]
-           , aPrecond     = [ PNeq char monster
-                            , Pred True "at"    [ monster, place ]
+           , aPrecond     = [ Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
                             , Pred True "scary" [ monster        ]
                             ]
-           , aEffect      = [ PIntends char (Pred False "alive" [ monster ])
+           , aEffect      = [ EIntends char (Pred False "alive" [ monster ])
                             ]
            }
 
@@ -31,18 +31,18 @@ testDomain =
     Action { aName        = "slay"
            , aActors      = [ char ]
            , aHappening   = False
-           , aConstraints = [ {- Pred True "character" [ char    ]
-                            , Pred True "monster"   [ monster ]
-                            , Pred True "place"     [ place   ] -}
+           , aConstraints = [ CPred $ Pred True "character" [ char    ]
+                            , CPred $ Pred True "monster"   [ monster ]
+                            , CPred $ Pred True "place"     [ place   ]
+                            , CNeq char monster
                             ]
-           , aPrecond     = [ PNeq char monster
-                            , Pred True "at"    [ monster, place ]
+           , aPrecond     = [ Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
                             , Pred True "scary" [ monster        ]
                             , Pred True "alive" [ monster        ]
                             , Pred True "alive" [ char           ]
                             ]
-           , aEffect      = [ Pred False "alive" [ monster ]
+           , aEffect      = [ EPred (Pred False "alive" [ monster ])
                             ]
            }
 
@@ -50,14 +50,16 @@ testDomain =
     Action { aName        = "go"
            , aActors      = [ char ]
            , aHappening   = True
-           , aConstraints = [
+           , aConstraints = [ CPred $ Pred True "character" [ char     ]
+                            , CPred $ Pred True "place"     [ place    ]
+                            , CPred $ Pred True "place"     [ newPlace ]
+                            , CNeq place newPlace
                             ]
-           , aPrecond     = [ PNeq place newPlace
-                            , Pred True "at"    [ char, place ]
+           , aPrecond     = [ Pred True "at"    [ char, place ]
                             , Pred True "alive" [ char        ]
                             ]
-           , aEffect      = [ Pred False "at" [ char, place ]
-                            , Pred True  "at" [ char, newPlace ]
+           , aEffect      = [ EPred $ Pred False "at" [ char, place ]
+                            , EPred $ Pred True  "at" [ char, newPlace ]
                             ]
            }
   ]
@@ -68,6 +70,7 @@ testAssumps =
   , Pred True "place"     [ "Forest" ]
   , Pred True "place"     [ "Bridge" ]
   , Pred True "character" [ "Knight" ]
+  , Pred True "character" [ "Dragon" ]
   , Pred True "monster"   [ "Dragon" ]
   , Pred True "alive"     [ "Knight" ]
   , Pred True "alive"     [ "Dragon" ]
@@ -80,6 +83,6 @@ testAssumps =
 -- XXX swapping the order of these two goals makes it seem like the planner
 -- won't terminate
 testGoals =
-  [ Pred True "at" [ "Dragon", "Bridge" ]
-  --, Pred False "alive" [ "Dragon" ]
+  [ Pred False "alive" [ "Dragon" ]
+  , Pred True "at" [ "Dragon", "Bridge" ]
   ]

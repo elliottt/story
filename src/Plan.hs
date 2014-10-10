@@ -5,28 +5,26 @@ module Plan where
 
 import FloydWarshall ( transitiveClosure )
 import Pretty
-import Unify ( Error, Binds, emptyBinds, Zonk(..), zonk, match )
 
+import           Planner.Constraints as C
+import           Planner.Monad
 import           Planner.Types
 
-import           Control.Applicative ( (<$>), (<*>) )
+import           Control.Monad ( foldM )
 import           Data.Array.IArray ( (!) )
-import           Data.Either ( isRight )
 import qualified Data.Foldable as F
 import qualified Data.Graph as Graph
 import qualified Data.Graph.SCC as SCC
-import           Data.List ( sortBy, partition )
+import           Data.List ( sortBy )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-
-import Debug.Trace
 
 
 -- Types -----------------------------------------------------------------------
 
 type FrameRef = Int
 
-data Plan = Plan { pBindings :: Binds
+data Plan = Plan { pBindings :: BindConsts
                    -- ^ Current set of variable bindings
                  , pNodes    :: Map.Map Step Node
                    -- ^ Instantiated actions, and their dependencies
@@ -58,38 +56,35 @@ data Flaw = FOpenCond Goal
 
 -- PlanState Operations --------------------------------------------------------
 
-zonkPlan :: Plan -> Either Error Plan
-zonkPlan plan = case zonk (pBindings plan) (pNodes plan) of
-  Right nodes' -> Right plan { pNodes = nodes' }
-  Left err     -> Left err
-
 planConsistent :: Plan -> Bool
-planConsistent  = ordsConsistent
+planConsistent p = ordsConsistent p && C.consistent (pBindings p)
 
 -- | Form a plan state from an initial set of assumptions, and goals.
-initialPlan :: Assumps -> Goals -> (Plan,Flaws)
-initialPlan as gs = ((Start `isBefore` Finish) psFinish, flaws)
+initialPlan :: Assumps -> Goals -> PlanM (Plan,Flaws)
+initialPlan as gs =
+  do (psStart,_)      <- addAction Start emptyAction { aName   = "<Start>"
+                                                     , aEffect = map EPred as
+                                                     } emptyPlan
+
+     (psFinish,flaws) <- addAction Finish emptyAction { aName     = "<Finish>"
+                                                      , aPrecond  = gs
+                                                      } psStart
+
+     return ((Start `isBefore` Finish) psFinish, flaws)
   where
-  emptyPlan        = Plan { pBindings = emptyBinds
+  emptyPlan        = Plan { pBindings = C.empty
                           , pNodes    = Map.empty
                           , pLinks    = Set.empty
                           , pFrames   = Map.empty
                           }
 
-  (psStart,_,_)      = addAction Start emptyAction { aName   = "<Start>"
-                                                   , aEffect = as
-                                                   } emptyPlan
-
-  (psFinish,_,flaws) = addAction Finish emptyAction { aName     = "<Finish>"
-                                                    , aPrecond  = gs
-                                                    } psStart
 
 -- | Retrieve variable bindings from the plan.
-getBindings :: Plan -> Binds
+getBindings :: Plan -> BindConsts
 getBindings  = pBindings
 
 -- | Set variable bindings in the plan.
-setBindings :: Binds -> Plan -> Plan
+setBindings :: BindConsts -> Plan -> Plan
 setBindings env p = p { pBindings = env }
 
 getActions :: Plan -> [(Step,Node)]
@@ -120,22 +115,17 @@ modifyAction act f ps = ps { pNodes = Map.adjust f act (pNodes ps) }
 -- | Add an action, with its instantiation, to the plan state.  All
 -- preconditions of the action will be considered goals, and appended to the
 -- agenda.
-addAction :: Step -> Action -> Plan -> (Plan,[(Term,Term)],Flaws)
-addAction act oper p = (p',ps,newGoals)
+addAction :: Step -> Action -> Plan -> PlanM (Plan,Flaws)
+addAction act oper p =
+  do bs' <- foldM (flip constrain) (pBindings p') (aConstraints oper)
+     return (p' { pBindings = bs' },newGoals)
   where
   p' = p { pNodes = Map.insert act Node { nodeInst     = oper
                                         , nodeBefore   = Set.empty
                                         , nodeAfter    = Set.empty
                                         } (pNodes p) }
 
-  newGoals = [ FOpenCond (Goal act tm) | tm       <- goals ]
-  ps       = [ (a,b)                   | PNeq a b <- ns    ]
-
-  (ns,goals) = partition isNeq (aPrecond oper)
-
-
-  isNeq PNeq{} = True
-  isNeq _      = False
+  newGoals = [ FOpenCond (Goal act tm) | tm <- aPrecond oper ]
 
 -- | Record that action a comes before action b, in the plan state.
 isBefore :: Step -> Step -> Plan -> Plan
@@ -216,15 +206,13 @@ sameIntent s_add p
 
     interactingSteps = Set.map clRight (Set.filter interactsWithNew (pLinks p))
 
-    -- XXX this currently relies on the actors being positionally the same, so
-    -- the actors [A,B] will differ from [B,A]
+    -- any overlap between actors is acceptable.
     sameActors sid
 
       | Just Node { nodeInst = act' } <- getAction sid p
       , not (null (aActors act')) =
-        case match (pBindings p) (aActors act) (aActors act') of
-          Right _  -> True
-          Left err -> traceShow err False
+        or [ equivalent a b (pBindings p) | TVar a <- aActors act
+                                          , TVar b <- aActors act' ]
 
       | otherwise =
         False
@@ -247,15 +235,6 @@ action Node { .. } = nodeInst
 
 
 -- Utility Instances -----------------------------------------------------------
-
-instance Zonk Node where
-  zonk' Node { .. } = Node <$> zonk' nodeInst
-                           <*> zonk' nodeBefore
-                           <*> zonk' nodeAfter
-
-instance Zonk Goal where
-  zonk' Goal { .. } = Goal <$> zonk' gSource
-                           <*> zonk' gGoal
 
 instance PP Goal where
   pp Goal { .. } = hang (pp gGoal)

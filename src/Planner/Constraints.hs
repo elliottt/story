@@ -12,21 +12,26 @@ module Planner.Constraints (
 
     -- * Construction
   , empty
-  , unify
+  , Unify(), unify, unifies, equivalent
   , constrain
   , known, unknown
+
+  , Subst()
+  , subst
   ) where
 
 import qualified Planner.DiscTrie as T
 import           Planner.Monad
 import           Planner.Types
-                     ( Effect(..), Constraint(..), Pred(..), Term(..), Var(..) )
+                     ( Effect(..), Constraint(..), Pred(..), Term(..), Var(..)
+                     , Step(..) )
 
 import           Control.Monad ( MonadPlus, guard, mzero, foldM )
 import           Data.Function ( on )
 import qualified Data.IntSet as ISet
 import qualified Data.IntMap.Strict as IMap
 import           Data.List ( sortBy, transpose )
+import           Data.Maybe ( fromMaybe )
 import qualified Data.Set as Set
 
 
@@ -52,6 +57,18 @@ empty  = BindConsts { bcVars         = IMap.empty
                     , bcEquivClasses = IMap.empty
                     , bcNextRef      = 0
                     }
+
+-- | Two variables are equivalent if they both belong to the same class.
+equivalent :: Var -> Var -> BindConsts -> Bool
+equivalent a b BindConsts { .. } = fromMaybe False $
+  do via <- IMap.lookup (varIndex a) bcVars
+     vib <- IMap.lookup (varIndex b) bcVars
+     return (viRef via == viRef vib)
+
+unifies :: Unify a => a -> a -> BindConsts -> Bool
+unifies a b bc = fromMaybe False $ runPlanM T.empty T.empty $
+  do bc' <- unify a b bc
+     return (consistent bc')
 
 class Unify a where
   unify :: a -> a -> BindConsts -> PlanM BindConsts
@@ -349,3 +366,26 @@ restrictDom avoid d (r,ecr)
   | otherwise =
     do dom' <- domRemove d (ecDomain ecr)
        return (r,ecr { ecDomain = dom' })
+
+
+
+-- Substitution ----------------------------------------------------------------
+
+class Subst a where
+  subst :: BindConsts -> a -> a
+
+instance Subst a => Subst [a] where
+  subst bc = map (subst bc)
+
+instance Subst Term where
+  subst bc (TVar v) =
+    let (_,ec,_) = getClass v bc
+     in case ecDomain ec of
+          DomKnown (Set.toList -> [d]) -> TCon d
+          _                            -> error ("Invalid domain for " ++ show v)
+
+  subst _ t = t
+
+instance Subst Step where
+  subst bc (Inst n s ts) = Inst n s (subst bc ts)
+  subst _  s             = s

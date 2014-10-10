@@ -9,13 +9,13 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     Types,
-                       Unify,
+  exposed-modules:     Planner.Types,
                        Plan,
-                       IPOCL,
+                       Planner.IPOCL,
+                       Planner.Constraints
+                       Planner.DiscTrie
                        FloydWarshall,
-                       Pretty,
-                       DiscTrie
+                       Pretty
   build-depends:       base >=4.6 && <5,
                        containers >=0.5,
                        monadLib >=3.7,
