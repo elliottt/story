@@ -17,7 +17,7 @@ testDomain =
            , aConstraints = [ CPred $ Pred True "monster"   [ monster ]
                             , CPred $ Pred True "character" [ char    ]
                             , CPred $ Pred True "place"     [ place   ]
-                            , CNeq monster place
+                            , CNeq monster char
                             ]
            , aPrecond     = [ Pred True "at"    [ monster, place ]
                             , Pred True "at"    [ char,    place ]
@@ -49,7 +49,7 @@ testDomain =
   , forall ["char", "place", "newPlace"] $ \ [char, place, newPlace] ->
     Action { aName        = "go"
            , aActors      = [ char ]
-           , aHappening   = True
+           , aHappening   = False
            , aConstraints = [ CPred $ Pred True "character" [ char     ]
                             , CPred $ Pred True "place"     [ place    ]
                             , CPred $ Pred True "place"     [ newPlace ]
@@ -66,18 +66,22 @@ testDomain =
 
 
 testAssumps =
-  [ Pred True "place"     [ "Castle" ]
-  , Pred True "place"     [ "Forest" ]
-  , Pred True "place"     [ "Bridge" ]
-  , Pred True "character" [ "Knight" ]
-  , Pred True "character" [ "Dragon" ]
-  , Pred True "monster"   [ "Dragon" ]
-  , Pred True "alive"     [ "Knight" ]
-  , Pred True "alive"     [ "Dragon" ]
+  [ EPred $ Pred True "place"     [ "Castle" ]
+  , EPred $ Pred True "place"     [ "Forest" ]
+  , EPred $ Pred True "place"     [ "Bridge" ]
+  , EPred $ Pred True "character" [ "Knight" ]
+  , EPred $ Pred True "character" [ "Dragon" ]
+  , EPred $ Pred True "monster"   [ "Dragon" ]
+  , EPred $ Pred True "alive"     [ "Knight" ]
+  , EPred $ Pred True "alive"     [ "Dragon" ]
 
-  , Pred True "at"        [ "Knight", "Forest" ]
-  , Pred True "at"        [ "Dragon", "Castle" ]
-  , Pred True "scary"     [ "Dragon" ]
+  , EPred $ Pred True "at"        [ "Knight", "Castle" ]
+  , EPred $ Pred True "at"        [ "Dragon", "Forest" ]
+  , EPred $ Pred True "scary"     [ "Dragon" ]
+
+    -- required, as going somewhere requires character intent
+  , EIntends "Dragon" (Pred True "at" ["Dragon", "Bridge"])
+  , EIntends "Knight" (Pred True "at" ["Knight", "Bridge"])
   ]
 
 testGoals =

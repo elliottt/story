@@ -172,7 +172,7 @@ data Frame = Frame { fSteps :: Set.Set Step
 allSteps :: Frame -> Set.Set Step
 allSteps Frame { .. } = Set.insert fFinal fSteps
 
-type Assumps = [Pred]
+type Assumps = [Effect]
 
 type Goals = [Pred]
 

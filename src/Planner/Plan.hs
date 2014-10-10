@@ -59,11 +59,26 @@ data Flaw = FOpenCond Goal
 planConsistent :: Plan -> Bool
 planConsistent p = ordsConsistent p && C.consistent (pBindings p)
 
+orphans :: Plan -> [Step]
+orphans Plan { .. }
+  | Set.null potential = []
+  | otherwise          = [ s | (s,Node { .. }) <- Map.toList pNodes
+                             , s `Set.member` potential
+                             , not (aHappening nodeInst)
+                             ]
+  where
+
+  steps      = Set.fromList (Map.keys pNodes)
+  nonOrphans = Set.unions $ Set.fromList [Start,Finish]
+                          : map allSteps (Map.elems pFrames)
+
+  potential  = steps Set.\\ nonOrphans
+
 -- | Form a plan state from an initial set of assumptions, and goals.
 initialPlan :: Assumps -> Goals -> PlanM (Plan,Flaws)
 initialPlan as gs =
   do (psStart,_)      <- addAction Start emptyAction { aName   = "<Start>"
-                                                     , aEffect = map EPred as
+                                                     , aEffect = as
                                                      } emptyPlan
 
      (psFinish,flaws) <- addAction Finish emptyAction { aName     = "<Finish>"

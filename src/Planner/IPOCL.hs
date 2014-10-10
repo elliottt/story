@@ -28,6 +28,11 @@ ipocl :: Assumps -> Goals -> PlanM [Step]
 ipocl as gs =
   do (p,flaws) <- initialPlan as gs
      p'        <- solveGoals p flaws
+
+     let os = orphans p'
+     dbg "orphans" os
+     guard (null os)
+
      -- XXX require that there are no orphans
      return (C.subst (pBindings p') (orderedActions p'))
 

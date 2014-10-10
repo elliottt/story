@@ -44,10 +44,11 @@ lookup key = lookupPath (toPath key)
 
 type Facts = DiscTrie Pred
 
-mkFacts :: [Pred] -> Facts
+mkFacts :: [Effect] -> Facts
 mkFacts  = foldl' addFact empty
   where
-  addFact t p = insert p p t
+  addFact t (EPred p) = insert p p t
+  addFact t _         = t
 
 
 type Domain = DiscTrie (Schema (Effect,Action))
@@ -60,8 +61,9 @@ mkDomain  = foldl' addEffect empty
   addAction op dom effect            = insert effect ((effect,) `fmap` op) dom
 
 -- | Does this predicate show up in the effects of any action in the domain?
-isRigid :: Domain -> Pred -> Bool
-isRigid dom p = null (lookup p dom ++ lookup (negPred p) dom)
+isRigid :: Domain -> Effect -> Bool
+isRigid dom (EPred p) = null (lookup p dom ++ lookup (negPred p) dom)
+isRigid dom _         = False -- intent is never rigid
 
 
 -- Tree Paths ------------------------------------------------------------------
