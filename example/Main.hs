@@ -71,13 +71,18 @@ testAssumps =
   , EPred $ Pred True "place"     [ "Bridge" ]
   , EPred $ Pred True "character" [ "Knight" ]
   , EPred $ Pred True "character" [ "Dragon" ]
+  , EPred $ Pred True "character" [ "Grue" ]
   , EPred $ Pred True "monster"   [ "Dragon" ]
+  , EPred $ Pred True "monster"   [ "Grue" ]
   , EPred $ Pred True "alive"     [ "Knight" ]
   , EPred $ Pred True "alive"     [ "Dragon" ]
+  , EPred $ Pred True "alive"     [ "Grue" ]
 
   , EPred $ Pred True "at"        [ "Knight", "Castle" ]
   , EPred $ Pred True "at"        [ "Dragon", "Forest" ]
+  , EPred $ Pred True "at"        [ "Grue", "Bridge" ]
   , EPred $ Pred True "scary"     [ "Dragon" ]
+  , EPred $ Pred True "scary"     [ "Grue" ]
 
     -- required, as going somewhere requires character intent
   , EIntends "Dragon" (Pred True "at" ["Dragon", "Bridge"])
@@ -87,4 +92,5 @@ testAssumps =
 testGoals =
   [ Pred False "alive" [ "Dragon" ]
   , Pred True "at" [ "Dragon", "Bridge" ]
+  , Pred False "alive" [ "Grue" ]
   ]

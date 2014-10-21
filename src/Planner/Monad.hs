@@ -5,8 +5,8 @@
 module Planner.Monad (
     PlanM()
   , runPlanM
-  , freshVar
-  , findAction
+  , freshVar, freshInst
+  , findAction, getDomain
   , getFacts
   , choose
 
@@ -14,7 +14,9 @@ module Planner.Monad (
   ) where
 
 import qualified Planner.DiscTrie as D
-import           Planner.Types ( Effect, Schema, Action )
+import           Planner.Types
+                     ( Effect(..), Schema, Action(..), Step(..), Term(..)
+                     , Var(..), Schema(..), inst )
 
 import           Control.Applicative ( Applicative(..), Alternative(..) )
 import qualified Control.Exception as X
@@ -80,6 +82,17 @@ freshVar  =
      setRW rw { rwNextVar = rwNextVar rw + 1 }
      return (rwNextVar rw)
 
+fresh :: Var -> PlanM Term
+fresh v = do ix <- freshVar
+             return (TVar v { varIndex = ix })
+
+freshInst :: Schema (Effect,Action) -> PlanM (Step,Effect,Action)
+freshInst (Forall vs a) =
+  do ts <- mapM fresh vs
+     ix <- freshVar
+     let (eff,oper) = inst ts a
+     return (Inst ix (aName oper) ts, eff, oper)
+
 -- | Choose an element of a list.  Left-biased, backtracking on failure.
 choose :: [a] -> PlanM a
 choose [a] = pure a
@@ -90,6 +103,9 @@ findAction :: Effect -> PlanM [Schema (Effect,Action)]
 findAction p =
   do RW { .. } <- getRW
      return (D.lookup p rwDomain)
+
+getDomain :: PlanM D.Domain
+getDomain  = rwDomain `fmap` getRW
 
 getFacts :: PlanM D.Facts
 getFacts  =

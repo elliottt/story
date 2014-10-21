@@ -7,10 +7,11 @@ import FloydWarshall ( transitiveClosure )
 import Pretty
 
 import           Planner.Constraints as C
+import qualified Planner.DiscTrie as D
 import           Planner.Monad
 import           Planner.Types
 
-import           Control.Monad ( foldM )
+import           Control.Monad ( foldM, guard )
 import           Data.Array.IArray ( (!) )
 import qualified Data.Foldable as F
 import qualified Data.Graph as Graph
@@ -32,6 +33,7 @@ data Plan = Plan { pBindings :: BindConsts
                    -- ^ Causal links
                  , pFrames   :: Map.Map FrameRef Frame
                    -- ^ Frames of commitment
+                 , pRank     :: !Int
                  } deriving (Show)
 
 data Node = Node { nodeInst     :: Action
@@ -74,6 +76,22 @@ orphans Plan { .. }
 
   potential  = steps Set.\\ nonOrphans
 
+-- | Find existing steps that could be used to explain 'Effect'.
+existingSteps :: Plan -> Effect -> [(Effect,Step)]
+existingSteps Plan { .. } goal =
+  do (step,Node { .. }) <- Map.toList pNodes
+     eff                <- aEffect nodeInst
+     guard (C.unifies goal eff pBindings)
+     return (eff,step)
+
+-- | Find new steps that can be used to explain 'Effect'.
+newSteps :: Plan -> Effect -> PlanM [(Step,Effect,Action)]
+newSteps Plan { .. } goal =
+  do steps <- mapM freshInst =<< findAction goal
+     return $ do (step,eff,act) <- steps
+                 guard (C.unifies goal eff pBindings)
+                 return (step,eff,act)
+
 -- | Form a plan state from an initial set of assumptions, and goals.
 initialPlan :: Assumps -> Goals -> PlanM (Plan,Flaws)
 initialPlan as gs =
@@ -91,6 +109,7 @@ initialPlan as gs =
                           , pNodes    = Map.empty
                           , pLinks    = Set.empty
                           , pFrames   = Map.empty
+                          , pRank     = 0
                           }
 
 

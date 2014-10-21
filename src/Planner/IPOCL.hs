@@ -51,17 +51,6 @@ lookupFrame p ref =
     Just frame -> return frame
     Nothing    -> empty
 
-fresh :: Var -> PlanM Term
-fresh v = do ix <- freshVar
-             return (TVar v { varIndex = ix })
-
-freshInst :: Schema (Effect,Action) -> PlanM (Step,Effect,Action)
-freshInst (Forall vs a) =
-  do ts <- mapM fresh vs
-     ix <- freshVar
-     let (eff,oper) = inst ts a
-     return (Inst ix (aName oper) ts, eff, oper)
-
 unify :: C.Unify tm => tm -> tm -> Plan -> PlanM Plan
 unify l r p =
   do bs' <- C.unify l r (pBindings p)
@@ -216,7 +205,10 @@ causalThreats p @ Plan { .. } =
 -- Operator Selection ----------------------------------------------------------
 
 operatorSelection :: Plan -> Effect -> PlanM (Bool,Step,Plan,Flaws)
-operatorSelection p goal =
+operatorSelection p goal = do
+  let existing = existingSteps p goal
+  new <- newSteps p goal
+  traceShowM ("Possible plans",length existing + length new)
   asum [ do (p',res) <- byAssumption p goal
             return (False,res,p',mempty)
 
@@ -224,7 +216,6 @@ operatorSelection p goal =
             return (True,s_add,p',flaws)
 
        ]
-
 
 -- | Resolve an open condition by reusing an exising step in the plan.
 byAssumption :: Plan -> Effect -> PlanM (Plan,Step)
