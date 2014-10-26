@@ -3,183 +3,186 @@
 
 module FF.GraphPlan where
 
-import           Control.Monad ( guard, mzero )
+import           Control.Monad ( unless )
 import           Data.Array
-import           Data.List ( foldl' )
+import           Data.IORef ( IORef, newIORef, writeIORef, readIORef )
 import qualified Data.IntSet as IS
+import           Data.Monoid ( Monoid(..) )
+import           Data.Word ( Word32 )
 
 
--- Facts -----------------------------------------------------------------------
+-- Predicates ------------------------------------------------------------------
 
--- | A reference to a fact, stored in the facts layer.
+-- | Ground, positive predicates.
+data Pred = Pred String [String]
+            deriving (Show,Eq,Ord)
+
+
+-- Reference Sets --------------------------------------------------------------
+
+newtype RefSet a = RefSet IS.IntSet
+                   deriving (Show,Eq,Monoid)
+
+class Ref a where
+  toRef   :: Int -> a
+  fromRef :: a -> Int
+
+instance Ref FactRef where
+  toRef               = FactRef
+  fromRef (FactRef r) = r
+
+instance Ref EffectRef where
+  toRef                 = EffectRef
+  fromRef (EffectRef r) = r
+
+refs :: Ref a => RefSet a -> [a]
+refs (RefSet is) = [ toRef r | r <- IS.toList is ]
+
+isNull :: RefSet a -> Bool
+isNull (RefSet rs) = IS.null rs
+
+singleton :: Ref a => a -> RefSet a
+singleton a = RefSet (IS.singleton (fromRef a))
+
+
+-- Connection Graph ------------------------------------------------------------
+
+data ConnGraph = ConnGraph { cgFacts   :: !(Array FactRef Fact)
+                           , cgOpers   :: !(Array OperRef Oper)
+                           , cgEffects :: !(Array EffectRef Effect)
+                           }
+
 newtype FactRef = FactRef Int
-                  deriving (Ix,Eq,Ord,Show,Num,Enum)
+                  deriving (Show,Eq,Ord,Ix,Enum)
 
-data Fact = Fact { fPred :: Pred
-                   -- ^ The actual fact
-                 , fActions :: [ActionRef]
-                   -- ^ Actions that are related to this fact
-                 } deriving (Show)
+data Fact = Fact { fProp  :: !Pred
+                 , fLevel :: !(IORef Word32)
+                 , fOp    :: !OperRef
+                 , fAdd   :: !Effects
+                   -- ^ Effects that add this fact
+                 , fDel   :: !Effects
+                   -- ^ Effects that delete this fact
+                 }
 
-data Pred = Pred
-            deriving (Show)
+newtype OperRef = OperRef Int
+                  deriving (Show,Eq,Ord,Ix,Enum)
 
-newtype Facts = Facts (Array FactRef Fact)
-                deriving (Show)
+data Oper = Oper { oEffects :: !Effects
+                 }
 
+newtype EffectRef = EffectRef Int
+                    deriving (Show,Eq,Ord,Ix,Enum)
 
--- Actions ---------------------------------------------------------------------
+data Effect = Effect { ePre       :: !Facts
+                     , eNumPre    :: !Word32
+                     , eAdds      :: !Facts
+                     , eDels      :: !Facts
 
-newtype ActionRef = ActionRef Int
-                    deriving (Ix,Eq,Ord,Show,Num,Enum)
-
-data Action = Action { aPre :: IS.IntSet
-                       -- ^ All the facts that this action depends on
-                     , aEffects :: [Effect]
-                       -- ^ The (conditional) effects of this action
-                     } deriving (Show)
-
-data Effect = Effect { ePre
-                       -- ^ Conditions for this effect
-                     , eAdd
-                       -- ^ Additions
-                     , eDel :: IS.IntSet
-                       -- ^ Deletions
-                     } deriving (Show)
-
-newtype Actions = Actions (Array ActionRef Action)
+                     , eLevel     :: !(IORef Word32)
+                       -- ^ Membership level for this effect
+                     , eActivePre :: !(IORef Word32)
+                       -- ^ Active preconditions for this effect
+                     }
 
 
--- States ----------------------------------------------------------------------
+-- | Reset all references in the plan graph to their initial state.
+resetConnGraph :: ConnGraph -> IO ()
+resetConnGraph ConnGraph { .. } =
+  do amapM_ resetFact   cgFacts
+     amapM_ resetOper   cgOpers
+     amapM_ resetEffect cgEffects
 
-class IsState state where
+resetFact :: Fact -> IO ()
+resetFact Fact { .. } =
+     writeIORef fLevel maxBound
 
-  -- | Whether or not one state entails another.
-  entails :: state -> state -> Bool
+resetOper :: Oper -> IO ()
+resetOper Oper { .. } = return ()
 
-  -- | Add an action to a state, assuming that its preconditions are satisfied
-  -- by the state.
-  addAction :: state -> Action -> state
-
-addActions :: IsState state => state -> [Action] -> state
-addActions  = foldl' addAction
-
-
--- | States are just sets of facts.
-newtype State = State IS.IntSet
-                deriving (Show)
-
-instance IsState State where
-
-  entails (State a) (State b) = b `IS.isSubsetOf` a
-
-  addAction (State s0) Action { .. } = State (foldl' update s0 aEffects)
-    where
-    update s Effect { .. }
-      | IS.null ePre || IS.isSubsetOf ePre s0 = (s `IS.union` eAdd) IS.\\ eDel
-
-      | otherwise = s
+resetEffect :: Effect -> IO ()
+resetEffect Effect { .. } =
+  do writeIORef eLevel maxBound
+     writeIORef eActivePre 0
 
 
+type Facts   = RefSet FactRef
+type Goals   = RefSet FactRef
+type State   = RefSet FactRef
+type Effects = RefSet EffectRef
 
--- | Relaxed states are ones where new actions never act on their delete
--- effects.
-newtype Relaxed = Relaxed IS.IntSet
-                  deriving (Show)
+type Level   = Word32
 
-relax :: State -> Relaxed
-relax (State s) = Relaxed s
+buildFixpoint :: ConnGraph -> State -> Goals -> IO ()
+buildFixpoint gr s0 g =
+  do resetConnGraph gr
+     loop 0 s0
 
-instance IsState Relaxed where
-
-  entails (Relaxed a) (Relaxed b) = b `IS.isSubsetOf` a
-
-  addAction (Relaxed s0) Action { .. } = Relaxed (foldl' update s0 aEffects)
-    where
-    update s Effect { .. }
-      | IS.null ePre || IS.isSubsetOf ePre s0 = s `IS.union` eAdd
-      | otherwise                             = s
-
-
--- Relaxed Planning Graphs -----------------------------------------------------
-
--- | Relaxed planning graphs.
-data Graph = Initial !Relaxed
-           | Apply Graph      -- Previous state
-                   !IS.IntSet -- Actions applied
-                   !Relaxed   -- New state
-             deriving (Show)
-
--- | The current state of the graph.
-graphState :: Graph -> Relaxed
-graphState (Apply _ _ s) = s
-graphState (Initial s)   = s
-
--- | The FF heuristic.
-h_ff :: Graph -> Int
-h_ff  = go 0
   where
-  go n (Apply g as _) = (go $! n + IS.size as) g
-  go n (Initial _)    = n
+  loop level facts =
+    do effs <- mconcat `fmap` mapM (activateFact gr level) (refs facts)
+       done <- allGoalsReached gr g
+       unless done $
+         do facts' <- mconcat `fmap` mapM (activateEffect gr level) (refs effs)
+
+            if isNull facts'
+               then return ()
+               else loop (level + 1) facts'
 
 
--- Relaxed Planning ------------------------------------------------------------
-
--- | Levels of applicable actions.
-type RelaxedPlan = [[ActionRef]]
-
--- | Given a maximum depth, a starting state and a goal state, return a relaxed
--- plan.
-relaxedPlan :: Facts -> Actions -> Int -> Relaxed -> Relaxed -> Maybe RelaxedPlan
-relaxedPlan facts acts maxDepth initial goal =
-  do graph <- relaxedGraph facts acts maxDepth initial goal
-     return (findPlan graph)
-
-
-relaxedGraph :: Facts -> Actions -> Int -> Relaxed -> Relaxed -> Maybe Graph
-relaxedGraph facts acts maxDepth initial goal = go 0 (Initial initial)
+-- | All goals have been reached if they are all activated in the connection
+-- graph.
+allGoalsReached :: ConnGraph -> Goals -> IO Bool
+allGoalsReached cg g = go goals
   where
+  goals     = refs g
 
-  go n g
-    | s `entails` goal =
-         return g
+  -- require that all goals have a level that isn't infinity.
+  go (r:rs) = do let Fact { .. } = cgFacts cg ! r
+                 l <- readIORef fLevel
+                 if l < maxBound
+                    then go rs
+                    else return False
 
-    | n < maxDepth =
-      do let (refs,as) = applicableActions facts acts s
-         guard (not (IS.null refs))
-         go (n+1) (Apply g refs (addActions s as))
-
-    | otherwise =
-         mzero
-
-    where
-
-    s = graphState g
+  -- add all goals to the current level
+  go []     =    return True
 
 
--- XXX this should cache the resulting set of actions, as it's likely that
--- search will pass through states multiple times when looking for the same
--- goal.
-applicableActions :: Facts -> Actions -> Relaxed -> (IS.IntSet,[Action])
-applicableActions (Facts facts) (Actions acts) (Relaxed s) =
-  foldl' step (IS.empty, []) actions
+-- | Set a fact to true at this level of the relaxed graph.  Return any effects
+-- that were enabled by adding this fact.
+activateFact :: ConnGraph -> Level -> FactRef -> IO Effects
+activateFact ConnGraph { .. } level ref =
+  do let Fact { .. } = cgFacts ! ref
+     writeIORef fLevel level
+
+     mconcat `fmap` mapM addedPrecond (refs fAdd)
 
   where
 
-  -- filter down the actions by ones that have at least some overlap with the
-  -- current state
-  actions = [ (aref,acts ! aref) | ref         <- IS.toList s
-                                 , let Fact { .. } = facts ! FactRef ref
-                                 , aref        <- fActions ]
+  addedPrecond eff =
+    do let Effect { .. } = cgEffects ! eff
+       pcs <- readIORef eActivePre
+       let pcs' = pcs + 1
+       writeIORef eActivePre $! pcs'
+
+       if pcs' == eNumPre
+          then return (singleton eff)
+          else return mempty
+
+-- | Add an effect at level i, and return all of its add effects.
+activateEffect :: ConnGraph -> Level -> EffectRef -> IO Facts
+activateEffect ConnGraph { .. } level ref =
+  do let Effect { .. } = cgEffects ! ref
+     writeIORef eLevel level
+     return eAdds
 
 
-  step (refs,as) (ActionRef ref,act)
-    | ref `IS.member` refs                   = (refs,as)
-    | Relaxed s `entails` Relaxed (aPre act) = (IS.insert ref refs, act:as)
-    | otherwise                              = (refs,as)
+-- Utilities -------------------------------------------------------------------
 
+amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> Array i e -> IO ()
+amapM_ f arr = go lo
+  where
+  (lo,hi) = bounds arr
 
--- | Work backwards through the plan, gathering steps that are required in the
--- relaxed plan.
-findPlan :: Graph -> RelaxedPlan
-findPlan graph = undefined
+  go i | i > hi    = return ()
+       | otherwise = do f (arr ! i)
+                        go (succ i)
