@@ -112,6 +112,9 @@ type Effects = RefSet EffectRef
 
 type Level   = Word32
 
+-- | Loop until the goal state is activated in the connection graph.  As the
+-- connection graph should only be built from domains that can activate all
+-- facts, and delete effects are ignored, this operation will terminate.
 buildFixpoint :: ConnGraph -> State -> Goals -> IO ()
 buildFixpoint gr s0 g =
   do resetConnGraph gr
@@ -143,7 +146,6 @@ allGoalsReached cg g = go goals
                     then go rs
                     else return False
 
-  -- add all goals to the current level
   go []     =    return True
 
 
