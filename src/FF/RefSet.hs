@@ -18,6 +18,9 @@ class Ref a where
 toList :: Ref a => RefSet a -> [a]
 toList (RefSet is) = [ toRef r | r <- IS.toList is ]
 
+fromList :: Ref a => [a] -> RefSet a
+fromList rs = RefSet (IS.fromList (map fromRef rs))
+
 null :: RefSet a -> Bool
 null (RefSet rs) = IS.null rs
 

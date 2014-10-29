@@ -6,7 +6,6 @@ import qualified FF.RefSet as RS
 
 import           Data.Array
 import           Data.IORef ( IORef )
-import           Data.Word ( Word32 )
 
 
 -- Connection Graph ------------------------------------------------------------
@@ -20,7 +19,7 @@ type Goals   = RS.RefSet FactRef
 type State   = RS.RefSet FactRef
 type Effects = RS.RefSet EffectRef
 
-type Level   = Word32
+type Level   = Int
 
 data ConnGraph = ConnGraph { cgFacts   :: !(Array FactRef Fact)
                            , cgOpers   :: !(Array OperRef Oper)
@@ -39,6 +38,10 @@ newtype EffectRef = EffectRef Int
 
 data Fact = Fact { fProp  :: !Pred
                  , fLevel :: !(IORef Level)
+
+                 , fIsTrue:: !(IORef Level)
+                 , fIsGoal:: !(IORef Bool)
+
                  , fOp    :: !OperRef
                  , fAdd   :: !Effects
                    -- ^ Effects that add this fact
@@ -50,7 +53,7 @@ data Oper = Oper { oEffects :: !Effects
                  }
 
 data Effect = Effect { ePre       :: !Facts
-                     , eNumPre    :: !Word32
+                     , eNumPre    :: !Int
                      , eAdds      :: !Facts
                      , eDels      :: !Facts
 

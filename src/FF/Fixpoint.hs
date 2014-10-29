@@ -23,7 +23,11 @@ resetConnGraph ConnGraph { .. } =
 
 resetFact :: Fact -> IO ()
 resetFact Fact { .. } =
-     writeIORef fLevel maxBound
+  do writeIORef fLevel maxBound
+     writeIORef fIsTrue 0
+     writeIORef fIsGoal False
+     writeIORef fCh     False
+
 
 resetOper :: Oper -> IO ()
 resetOper Oper { .. } = return ()
@@ -43,15 +47,16 @@ buildFixpoint gr s0 g =
      loop 0 s0
 
   where
-  loop level facts =
-    do effs <- mconcat `fmap` mapM (activateFact gr level) (RS.toList facts)
+  loop factLevel facts =
+    do effs <- mconcat `fmap` mapM (activateFact gr factLevel) (RS.toList facts)
        done <- allGoalsReached gr g
        unless done $
-         do facts' <- mconcat `fmap` mapM (activateEffect gr level) (RS.toList effs)
+         do let effLevel = factLevel + 1
+            facts' <- mconcat `fmap` mapM (activateEffect gr effLevel) (RS.toList effs)
 
             if RS.null facts'
                then return ()
-               else loop (level + 1) facts'
+               else loop (effLevel + 1) facts'
 
 
 -- | All goals have been reached if they are all activated in the connection
