@@ -4,8 +4,8 @@
 
 module Planner.Monad (
     PlanM()
-  , runPlanM
-  , freshVar, freshInst
+  , runPlanM, findAll
+  , fresh, freshVar, freshInst
   , findAction, getDomain
   , getFacts
   , choose
@@ -74,6 +74,12 @@ runPlanM rwFacts rwDomain (PlanM f) = f rw Nothing final
   where
   rw          = RW { rwNextVar = 0, .. }
   final _ a _ = Just a
+
+findAll :: D.Facts -> D.Domain -> PlanM a -> [a]
+findAll rwFacts rwDomain (PlanM f) = f rw [] final
+  where
+  rw          = RW { rwNextVar = 0, .. }
+  final _ a r = a : r
 
 -- | Generate a fresh variable index.
 freshVar :: PlanM Int

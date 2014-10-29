@@ -4,10 +4,17 @@ import Planner
 import Planner.Types
 import Pretty
 
+import FF.Compile (compile)
+
 main :: IO ()
-main  = case findPlan testDomain testAssumps testGoals of
-  Just plan -> mapM_ (print . pp) plan
-  Nothing   -> putStrLn "No plan"
+main  =
+  do compile testAssumps testDomain
+     _ <- getChar
+     return ()
+
+  -- case findPlan testDomain testAssumps testGoals of
+  -- Just plan -> mapM_ (print . pp) plan
+  -- Nothing   -> putStrLn "No plan"
 
 testDomain =
   [ forall [ "monster", "char", "place" ] $ \ [ monster, char, place ] ->

@@ -26,7 +26,6 @@ resetFact Fact { .. } =
   do writeIORef fLevel maxBound
      writeIORef fIsTrue 0
      writeIORef fIsGoal False
-     writeIORef fCh     False
 
 
 resetOper :: Oper -> IO ()

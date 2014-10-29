@@ -389,3 +389,10 @@ instance Subst Term where
 instance Subst Step where
   subst bc (Inst n s ts) = Inst n s (subst bc ts)
   subst _  s             = s
+
+instance Subst Effect where
+  subst bc (EPred p)      = EPred (subst bc p)
+  subst bc (EIntends a i) = EIntends (subst bc a) (subst bc i)
+
+instance Subst Pred where
+  subst bc (Pred n p ts) = Pred n p (subst bc ts)

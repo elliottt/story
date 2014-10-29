@@ -16,6 +16,11 @@ library
                        Planner.Constraints,
                        Planner.DiscTrie,
                        Planner.Monad,
+                       FF.Compile,
+                       FF.ConnGraph,
+                       FF.Extract,
+                       FF.Fixpoint,
+                       FF.RefSet,
                        FloydWarshall,
                        Pretty
   build-depends:       base >=4.6 && <5,
