@@ -20,13 +20,15 @@ data Term = TVar  !T.Text
 
 data Problem = Problem { pName   :: !T.Text
                        , pDomain :: !T.Text
-                       , pInits  :: [Term]
-                       , pGoal   :: !Term
+                       , pInits  :: Term
+                       , pGoal   :: Term
                        } deriving (Show)
 
 data Domain = Domain { dName    :: !T.Text
                      , dTypes   :: [Typed [T.Text]]
+                       -- ^ Defined types
                      , dPreds   :: [Pred]
+                       -- ^ Signatures for all predicates that show up
                      , dActions :: [Action]
                      } deriving (Show)
 
