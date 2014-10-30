@@ -11,6 +11,7 @@ import qualified Data.ByteString as S
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 
+import Debug.Trace
 
 data Term = TVar  !T.Text
           | TCon  !T.Text
@@ -25,12 +26,17 @@ data Problem = Problem { pName   :: !T.Text
 
 data Domain = Domain { dName    :: !T.Text
                      , dTypes   :: [Typed [T.Text]]
+                     , dPreds   :: [Pred]
                      , dActions :: [Action]
                      } deriving (Show)
 
 data Typed a = Typed { tVal  :: a
                      , tType :: !T.Text
                      } deriving (Show)
+
+data Pred = Pred { pdName :: !T.Text
+                 , pdArgs :: [Typed [T.Text]]
+                 } deriving (Show)
 
 data Action = Action { aName   :: !T.Text
                      , aParams :: [Typed [T.Text]]
@@ -104,6 +110,8 @@ instance L.FromLisp Domain where
        L.Symbol dName <- namedArg  "domain"  args
        L.List types   <- namedArg  ":types"  args
        dTypes         <- parseParams types
+       L.List preds   <- namedArg ":predicates" args
+       dPreds         <- mapM L.parseLisp preds
        dActions       <- namedArgs ":action" args
        return Domain { .. } 
 
@@ -112,6 +120,7 @@ instance L.ToLisp Domain where
     L.List $ L.Symbol "define"
            : pair "domain" (L.Symbol dName)
            : pair ":types" (L.List (concatMap (typedLisp (map L.Symbol)) dTypes))
+           : L.List (L.Symbol ":predicates" : map L.toLisp dPreds)
            : map L.toLisp dActions
       where
       pair n l = L.List [ L.Symbol n, l ]
@@ -119,6 +128,22 @@ instance L.ToLisp Domain where
 typedLisp :: (a -> [L.Lisp]) -> Typed a -> [L.Lisp]
 typedLisp lispArg Typed { .. } =
   lispArg tVal ++ [L.Symbol "-", L.Symbol tType]
+
+instance L.FromLisp Pred where
+  parseLisp (L.List (L.Symbol pdName : params)) =
+    do pdArgs <- parseParams params
+       return Pred { .. }
+
+  parseLisp l =
+       L.typeMismatch "Pred" l
+
+instance L.ToLisp Pred where
+  toLisp Pred { .. } =
+    L.List [ L.Symbol pdName
+           , L.List (concatMap (typedLisp (map mkVar)) pdArgs)
+           ]
+    where
+    mkVar str = L.Symbol (T.cons '?' str)
 
 instance L.FromLisp Action where
   parseLisp (L.List (L.Symbol aName:ls)) =
