@@ -8,7 +8,7 @@ import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
 import           Control.Monad ( foldM )
-import           Data.Array ( (!) )
+import           Data.Array.IO ( readArray )
 import           Data.IORef ( readIORef, writeIORef )
 import qualified Data.IntMap.Strict as IM
 import           Data.Monoid ( mappend )
@@ -20,7 +20,7 @@ goalSet :: ConnGraph -> Goals -> IO (Level,GoalSet)
 goalSet ConnGraph { .. } goals = go 1 IM.empty (RS.toList goals)
   where
   go !m !gs (g:rest) =
-    do let Fact { .. } = cgFacts ! g
+    do Fact { .. } <- readArray cgFacts g
        i <- readIORef fLevel
        go (max m i) (IM.insertWith mappend i (RS.singleton g) gs) rest
 
@@ -30,11 +30,11 @@ goalSet ConnGraph { .. } goals = go 1 IM.empty (RS.toList goals)
 
 difficulty :: ConnGraph -> EffectRef -> IO Level
 difficulty ConnGraph { .. } e =
-  do let Effect { .. } = cgEffects ! e
+  do Effect { .. } <- readArray cgEffects e
      go maxBound (RS.toList ePre)
   where
   go !l (f:fs) =
-    do let Fact { .. } = cgFacts ! f
+    do Fact { .. } <- readArray cgFacts f
        i <- readIORef fLevel
        go (min l i) fs
 
@@ -64,20 +64,20 @@ extractPlan cg @ ConnGraph { .. } goals0 =
          return plan
 
   solveGoal factLevel acc@(plan,gs) g =
-    do let Fact { .. } = cgFacts ! g
+    do Fact { .. } <- readArray cgFacts g
 
        -- the goal was solved by something else at this level
        isTrue <- readIORef fIsTrue
        if isTrue == factLevel
           then return acc
           else do e <- pickBest (RS.toList fAdd)
-                  let Effect { .. } = cgEffects ! e
+                  Effect { .. } <- readArray cgEffects e
                   gs' <- filterGoals gs factLevel (RS.toList ePre)
                   mapM_ (markAdd factLevel) (RS.toList eAdds)
                   return (e:plan,gs')
 
   filterGoals gs factLevel (f:fs) =
-    do let Fact { .. } = cgFacts ! f
+    do Fact { .. } <- readArray cgFacts f
 
        isGoal <- readIORef fIsGoal
        isTrue <- readIORef fIsTrue
@@ -101,7 +101,7 @@ extractPlan cg @ ConnGraph { .. } goals0 =
 
   -- mark the fact as being added at i
   markAdd i f =
-    do let Fact { .. } = cgFacts ! f
+    do Fact { .. } <- readArray cgFacts f
        writeIORef fIsTrue i
 
 

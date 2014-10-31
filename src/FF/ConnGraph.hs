@@ -4,7 +4,7 @@ module FF.ConnGraph where
 
 import qualified FF.RefSet as RS
 
-import           Data.Array
+import           Data.Array.IO
 import           Data.IORef ( IORef )
 
 
@@ -21,9 +21,9 @@ type Effects = RS.RefSet EffectRef
 
 type Level   = Int
 
-data ConnGraph = ConnGraph { cgFacts   :: !(Array FactRef Fact)
-                           , cgOpers   :: !(Array OperRef Oper)
-                           , cgEffects :: !(Array EffectRef Effect)
+data ConnGraph = ConnGraph { cgFacts   :: !(IOArray FactRef Fact)
+                           , cgOpers   :: !(IOArray OperRef Oper)
+                           , cgEffects :: !(IOArray EffectRef Effect)
                            }
 
 newtype FactRef = FactRef Int

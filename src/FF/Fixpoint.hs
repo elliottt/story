@@ -7,8 +7,8 @@ import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
 import           Control.Monad ( unless )
-import           Data.Array
-import           Data.IORef ( writeIORef, readIORef )
+import           Data.Array.IO ( Ix, IOArray, readArray, writeArray, getBounds )
+import           Data.IORef ( readIORef, writeIORef )
 import           Data.Monoid ( mempty, mconcat )
 
 
@@ -66,7 +66,7 @@ allGoalsReached cg g = go goals
   goals     = RS.toList g
 
   -- require that all goals have a level that isn't infinity.
-  go (r:rs) = do let Fact { .. } = cgFacts cg ! r
+  go (r:rs) = do Fact { .. } <- readArray (cgFacts cg) r
                  l <- readIORef fLevel
                  if l < maxBound
                     then go rs
@@ -79,7 +79,7 @@ allGoalsReached cg g = go goals
 -- that were enabled by adding this fact.
 activateFact :: ConnGraph -> Level -> FactRef -> IO Effects
 activateFact ConnGraph { .. } level ref =
-  do let Fact { .. } = cgFacts ! ref
+  do Fact { .. } <- readArray cgFacts ref
      writeIORef fLevel level
 
      mconcat `fmap` mapM addedPrecond (RS.toList fAdd)
@@ -87,7 +87,7 @@ activateFact ConnGraph { .. } level ref =
   where
 
   addedPrecond eff =
-    do let Effect { .. } = cgEffects ! eff
+    do Effect { .. } <- readArray cgEffects eff
        pcs <- readIORef eActivePre
        let pcs' = pcs + 1
        writeIORef eActivePre $! pcs'
@@ -99,18 +99,19 @@ activateFact ConnGraph { .. } level ref =
 -- | Add an effect at level i, and return all of its add effects.
 activateEffect :: ConnGraph -> Level -> EffectRef -> IO Facts
 activateEffect ConnGraph { .. } level ref =
-  do let Effect { .. } = cgEffects ! ref
+  do Effect { .. } <- readArray cgEffects ref
      writeIORef eLevel level
      return eAdds
 
 
 -- Utilities -------------------------------------------------------------------
 
-amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> Array i e -> IO ()
-amapM_ f arr = go lo
-  where
-  (lo,hi) = bounds arr
+amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> IOArray i e -> IO ()
+amapM_ f arr =
+  do (lo,hi) <- getBounds arr
 
-  go i | i > hi    = return ()
-       | otherwise = do f (arr ! i)
-                        go (succ i)
+     let go i | i > hi    =    return ()
+              | otherwise = do f =<< readArray arr i
+                               go (succ i)
+
+     go lo
