@@ -3,7 +3,14 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module FF.Input where
+module FF.Input (
+    Term(..)
+  , Problem(..), parseProblem
+  , Domain(..), parseDomain
+  , Typed(..)
+  , Pred(..)
+  , Action(..)
+  ) where
 
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.AttoLisp as L
@@ -48,6 +55,18 @@ data Action = Action { aName   :: !T.Text
 
 
 -- Parsing ---------------------------------------------------------------------
+
+parseDomain :: S.ByteString -> Either String Domain
+parseDomain bytes =
+  case parseLisp bytes of
+    L.Success a -> Right a
+    L.Error msg -> Left msg
+
+parseProblem :: S.ByteString -> Either String Problem
+parseProblem bytes =
+  case parseLisp bytes of
+    L.Success a -> Right a
+    L.Error msg -> Left msg
 
 parseLisp :: L.FromLisp a => S.ByteString -> L.Result a
 parseLisp inp =
