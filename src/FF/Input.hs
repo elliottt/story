@@ -3,36 +3,33 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module FF.Input (
+module FF.Input {-(
     Term(..)
   , Problem(..), parseProblem
   , Domain(..), parseDomain
   , Typed(..)
   , Pred(..)
   , Action(..)
-  ) where
+  ) -}where
 
-import qualified Data.Attoparsec.ByteString as A
-import qualified Data.AttoLisp as L
-import qualified Data.ByteString as S
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as T
+import           Control.Applicative ( Applicative(..), Alternative(..) )
+import           Control.Monad ( unless, when )
+import qualified Data.Attoparsec.Text.Lazy as A
+import qualified Data.Text as S
+import qualified Data.Text.Lazy as L
 
-import Debug.Trace
-
-data Term = TVar  !T.Text
-          | TCon  !T.Text
-          | TPred !T.Text [Term]
+data PDDL = PDDLProblem Problem
+          | PDDLDomain Domain
             deriving (Show)
 
-data Problem = Problem { pName   :: !T.Text
-                       , pDomain :: !T.Text
+data Problem = Problem { pName   :: !S.Text
+                       , pDomain :: !S.Text
                        , pInits  :: Term
                        , pGoal   :: Term
                        } deriving (Show)
 
-data Domain = Domain { dName    :: !T.Text
-                     , dTypes   :: [Typed [T.Text]]
+data Domain = Domain { dName    :: !S.Text
+                     , dTypes   :: [Typed [S.Text]]
                        -- ^ Defined types
                      , dPreds   :: [Pred]
                        -- ^ Signatures for all predicates that show up
@@ -40,21 +37,92 @@ data Domain = Domain { dName    :: !T.Text
                      } deriving (Show)
 
 data Typed a = Typed { tVal  :: a
-                     , tType :: !T.Text
+                     , tType :: !S.Text
                      } deriving (Show)
 
-data Pred = Pred { pdName :: !T.Text
-                 , pdArgs :: [Typed [T.Text]]
+data Pred = Pred { pdName :: !S.Text
+                 , pdArgs :: [Typed [S.Text]]
                  } deriving (Show)
 
-data Action = Action { aName   :: !T.Text
-                     , aParams :: [Typed [T.Text]]
+data Action = Action { aName   :: !S.Text
+                     , aParams :: [Typed [S.Text]]
                      , aPre    :: Term
                      , aEff    :: Term
                      } deriving (Show)
 
+data Term = TVar  !S.Text
+          | TCon  !S.Text
+          | TPred !S.Text [Term]
+            deriving (Show)
+
 
 -- Parsing ---------------------------------------------------------------------
+
+data SExp = SList [SExp]
+          | SString !S.Text
+          | SSymbol !S.Text
+          | SInt !Integer
+            deriving (Show)
+
+comment :: A.Parser ()
+comment  = A.option () $ do A.char ';'
+                            loop
+  where
+  loop = do done <- A.choice [ do c <- A.satisfy A.isEndOfLine
+                                  when (c == '\r') (A.skip (== '\n'))
+                                  return True
+
+                             ,    A.atEnd
+                             ]
+            if done
+               then do A.skipSpace
+                       comment
+               else do A.skip (const True)
+                       loop
+
+sexp :: A.Parser SExp
+sexp  = (A.skipSpace *> comment *> (slist <|> sstring <|> ssymbol <|> sint))
+  A.<?> "sexp"
+  where
+  spaces = A.many1 A.space
+
+  slist = do A.char '('
+             exps <- A.manyTill (sexp <* A.skipSpace) (A.char ')')
+             return (SList exps)
+       A.<?> "slist"
+
+  sstring = do A.char '"'
+               str <- A.takeWhile (/= '\"')
+               A.char '"'
+               return (SString str)
+         A.<?> "string"
+
+
+  symChars = ":-!?_" ++ ['a' .. 'z'] ++ ['A' .. 'Z'] ++ ['0' .. '9']
+  ssymbol  = do sym <- A.takeWhile1 (`elem` symChars)
+                return (SSymbol sym)
+          A.<?> "symbol"
+
+  sint = do n <- A.decimal
+            return (SInt n)
+      A.<?> "integer"
+
+
+--pddl :: A.Parser [PDDL]
+pddl  = loop
+  where
+  loop = do comment
+            end <- A.atEnd
+            if end
+               then return []
+               else do e <- sexp
+                       rest <- loop
+                       return (e:rest)
+
+
+
+
+{-
 
 parseDomain :: S.ByteString -> Either String Domain
 parseDomain bytes =
@@ -250,3 +318,5 @@ instance L.ToLisp Term where
   toLisp (TVar s)     = L.Symbol (T.cons '?' s)
   toLisp (TCon n)     = L.Symbol n
   toLisp (TPred f ts) = L.List (L.Symbol f : map L.toLisp ts)
+
+-}
