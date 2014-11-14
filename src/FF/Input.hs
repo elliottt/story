@@ -102,8 +102,7 @@ data GoalDesc = GDAnd [GoalDesc]
               | GDLit (Literal Term)
                 deriving (Show)
 
-data Con = CAnd [GoalDesc]
-         | CForall (TypedList Name) Con
+data Con = CForall (TypedList Name) [Con]
          | CAtEnd GoalDesc
          | CAlways GoalDesc
          | CSometime GoalDesc
@@ -173,7 +172,7 @@ comment  = A.option () $ do _ <- A.char ';'
                        loop
 
 sexp :: A.Parser SExp
-sexp  = (A.skipSpace *> comment *> (slist <|> sstring <|> ssymbol <|> sint))
+sexp  = (A.skipSpace *> comment *> (slist <|> sint <|> sstring <|> ssymbol))
   A.<?> "sexp"
   where
   slist = do _    <- A.char '('
@@ -188,7 +187,7 @@ sexp  = (A.skipSpace *> comment *> (slist <|> sstring <|> ssymbol <|> sint))
          A.<?> "string"
 
 
-  symChars = ":-!?_" ++ ['a' .. 'z'] ++ ['A' .. 'Z'] ++ ['0' .. '9']
+  symChars = ":-!?_=" ++ ['a' .. 'z'] ++ ['A' .. 'Z'] ++ ['0' .. '9']
   ssymbol  = do sym <- A.takeWhile1 (`elem` symChars)
                 return (SSymbol sym)
           A.<?> "symbol"
@@ -264,6 +263,10 @@ domain domName = loop Set.empty (emptyDomain domName)
   loop seen dom (SList (SSymbol ":functions":funs):rest) =
     do fs <- typedList function funs
        loop (Set.insert ":functions" seen) dom { dFuns = fs } rest
+
+  loop seen dom (SList [SSymbol ":constraints",con]:rest) =
+    do cs <- constraints con
+       loop (Set.insert ":constraints" seen) dom { dCons = cs} rest
 
   loop _ dom [] =
        return dom
@@ -371,16 +374,20 @@ goalDesc e =
    GDLit `fmap` literal parseTerm e
 
 
+constraints :: SExp -> A.Parser [Con]
+constraints (SList (SSymbol "and" : cons)) =
+     concat `fmap` mapM constraints cons
+constraints e =
+  do c <- constraint e
+     return [c]
+
 constraint :: SExp -> A.Parser Con
 constraint (SList (SSymbol sym : cons))
 
-  | sym == "and" =
-       CAnd `fmap` mapM goalDesc cons
-
   | sym == "forall", [SList vars,body] <- cons =
     do args <- typedList parseVar vars
-       con  <- constraint body
-       return (CForall args con)
+       cs   <- constraints body
+       return (CForall args cs)
 
   | sym == "at", [SSymbol "end",body] <- cons =
        CAtEnd `fmap` goalDesc body
