@@ -24,6 +24,11 @@ fromList rs = RefSet (IS.fromList (map fromRef rs))
 null :: RefSet a -> Bool
 null (RefSet rs) = IS.null rs
 
+empty :: RefSet a
+empty  = RefSet IS.empty
+
 singleton :: Ref a => a -> RefSet a
 singleton a = RefSet (IS.singleton (fromRef a))
 
+insert :: Ref a => a -> RefSet a -> RefSet a
+insert a (RefSet rs) = RefSet (IS.insert (fromRef a) rs)

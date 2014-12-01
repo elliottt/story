@@ -7,7 +7,7 @@ import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
 import           Control.Monad ( unless )
-import           Data.Array.IO ( Ix, IOArray, readArray, writeArray, getBounds )
+import           Data.Array.IO ( readArray )
 import           Data.IORef ( readIORef, writeIORef )
 import           Data.Monoid ( mempty, mconcat )
 
@@ -82,7 +82,7 @@ activateFact ConnGraph { .. } level ref =
   do Fact { .. } <- readArray cgFacts ref
      writeIORef fLevel level
 
-     mconcat `fmap` mapM addedPrecond (RS.toList fAdd)
+     mconcat `fmap` mapM addedPrecond (RS.toList fPreCond)
 
   where
 
@@ -102,16 +102,3 @@ activateEffect ConnGraph { .. } level ref =
   do Effect { .. } <- readArray cgEffects ref
      writeIORef eLevel level
      return eAdds
-
-
--- Utilities -------------------------------------------------------------------
-
-amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> IOArray i e -> IO ()
-amapM_ f arr =
-  do (lo,hi) <- getBounds arr
-
-     let go i | i > hi    =    return ()
-              | otherwise = do f =<< readArray arr i
-                               go (succ i)
-
-     go lo
