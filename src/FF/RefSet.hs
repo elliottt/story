@@ -32,3 +32,6 @@ singleton a = RefSet (IS.singleton (fromRef a))
 
 insert :: Ref a => a -> RefSet a -> RefSet a
 insert a (RefSet rs) = RefSet (IS.insert (fromRef a) rs)
+
+intersection :: RefSet a -> RefSet a -> RefSet a
+intersection (RefSet a) (RefSet b) = RefSet (IS.intersection a b)

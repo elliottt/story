@@ -8,7 +8,7 @@ import qualified FF.RefSet as RS
 
 import           Control.Monad ( zipWithM )
 import           Data.Array.IO
-import           Data.IORef ( IORef, newIORef, readIORef )
+import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
 import qualified Data.Set as Set
 import qualified Data.Map as Map
 
@@ -59,6 +59,13 @@ data Effect = Effect { ePre       :: !Facts
                      , eAdds      :: !Facts
                      , eDels      :: !Facts
 
+                     , eInPlan    :: !(IORef Bool)
+                       -- ^ Whether or not this effect is a member of the
+                       -- current relaxed plan
+
+                     , eIsInH     :: !(IORef Bool)
+                       -- ^ If this action is part of the helpful action set
+
                      , eLevel     :: !(IORef Level)
                        -- ^ Membership level for this effect
                      , eActivePre :: !(IORef Level)
@@ -77,10 +84,9 @@ instance RS.Ref EffectRef where
 
 -- Input Processing ------------------------------------------------------------
 
-buildConnGraph :: I.Problem -> I.Domain -> IO ConnGraph
-buildConnGraph prob dom =
+buildConnGraph :: I.Domain -> I.Problem -> IO (State,Goals,ConnGraph)
+buildConnGraph dom prob =
   do cgOpers   <- newListArray (OperRef 0, OperRef (length opers - 1)) opers
-
 
      facts   <- mapM mkFact allFacts
      cgFacts <- newListArray (FactRef 0, FactRef (length facts - 1)) facts
@@ -88,9 +94,13 @@ buildConnGraph prob dom =
      effs      <- zipWithM (mkEffect cgFacts) (map EffectRef [0 ..]) allEffs
      cgEffects <- newListArray (EffectRef 0, EffectRef (length effs - 1)) effs
 
-     return ConnGraph { .. }
+     return (state,goal,ConnGraph { .. })
 
   where
+  -- translated goal and initial state
+  state = RS.fromList (map (factRefs Map.!) (I.probInit prob))
+  goal  = RS.fromList (map (factRefs Map.!) (I.probGoal prob))
+
   -- all ground facts
   allFacts = Set.toList (I.probFacts prob `Set.union` I.domFacts dom)
   factRefs = Map.fromList (zip allFacts (map FactRef [0 ..]))
@@ -116,7 +126,8 @@ buildConnGraph prob dom =
   mkEffect facts ix e =
     do eLevel     <- newIORef 0
        eActivePre <- newIORef 0
-
+       eInPlan    <- newIORef False
+       eIsInH     <- newIORef False
 
        let refs fs = RS.fromList (map (factRefs Map.!) fs)
            eff     =  Effect { ePre    = refs (I.ePre e)
@@ -146,14 +157,41 @@ buildConnGraph prob dom =
          writeArray facts ref Fact { fDel = RS.insert ix fDel, .. }
 
 
+-- Resetting -------------------------------------------------------------------
+
+-- | Reset all references in the plan graph to their initial state.
+resetConnGraph :: ConnGraph -> IO ()
+resetConnGraph ConnGraph { .. } =
+  do amapM_ resetFact   cgFacts
+     amapM_ resetOper   cgOpers
+     amapM_ resetEffect cgEffects
+
+resetFact :: Fact -> IO ()
+resetFact Fact { .. } =
+  do writeIORef fLevel maxBound
+     writeIORef fIsTrue 0
+     writeIORef fIsGoal False
+
+
+resetOper :: Oper -> IO ()
+resetOper Oper { .. } = return ()
+
+resetEffect :: Effect -> IO ()
+resetEffect Effect { .. } =
+  do writeIORef eLevel maxBound
+     writeIORef eActivePre 0
+     writeIORef eInPlan False
+     writeIORef eIsInH False
+
+
 -- Utilities -------------------------------------------------------------------
 
 printFacts :: ConnGraph -> IO ()
-printFacts ConnGraph { .. } = amapM_ printFact cgFacts
+printFacts ConnGraph { .. } = amapWithKeyM_ printFact cgFacts
 
-printFact :: Fact -> IO ()
-printFact Fact { .. } =
-  do putStrLn ("Fact: " ++ show fProp)
+printFact :: FactRef -> Fact -> IO ()
+printFact ref Fact { .. } =
+  do putStrLn ("Fact: (" ++ show ref ++ ") " ++ show fProp)
 
      lev    <- readIORef fLevel
      isTrue <- readIORef fIsTrue
@@ -168,12 +206,35 @@ printFact Fact { .. } =
        , "  deleted by: " ++ show fDel
        ]
 
+printEffects :: ConnGraph -> IO ()
+printEffects ConnGraph { .. } = amapWithKeyM_ printEffect cgEffects
+
+printEffect :: EffectRef -> Effect -> IO ()
+printEffect ref Effect { .. } =
+  do putStrLn ("Effect (" ++ show ref ++ ")")
+
+     lev <- readIORef eLevel
+
+     putStr $ unlines
+       [ "  level: " ++ show lev
+       ]
+
 amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> IOArray i e -> IO ()
 amapM_ f arr =
   do (lo,hi) <- getBounds arr
 
      let go i | i > hi    =    return ()
               | otherwise = do f =<< readArray arr i
+                               go (succ i)
+
+     go lo
+
+amapWithKeyM_ :: (Enum i, Ix i) => (i -> e -> IO ()) -> IOArray i e -> IO ()
+amapWithKeyM_ f arr =
+  do (lo,hi) <- getBounds arr
+
+     let go i | i > hi    =    return ()
+              | otherwise = do f i =<< readArray arr i
                                go (succ i)
 
      go lo

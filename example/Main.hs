@@ -4,13 +4,21 @@ import Planner
 import Planner.Types
 import Pretty
 
-import FF.Compile (compile)
+import FF.Compile ( compile )
+import FF.Input ( parseDomain )
+
+import qualified Data.ByteString as S
 
 main :: IO ()
 main  =
-  do compile testAssumps testDomain
-     _ <- getChar
-     return ()
+  do bytes <- S.readFile "test.dom"
+     case parseDomain bytes of
+
+       Right dom -> do compile dom
+                       _ <- getChar
+                       return ()
+
+       Left err -> putStrLn err
 
   -- case findPlan testDomain testAssumps testGoals of
   -- Just plan -> mapM_ (print . pp) plan

@@ -53,19 +53,3 @@ expandEffects :: Operator -> [Effect]
 expandEffects Operator { .. } = map addPrecond opEffects
   where
   addPrecond Effect { .. } = Effect { ePre = opPre ++ ePre, .. }
-
-
--- Testing ---------------------------------------------------------------------
-
-testDom = Domain
-  [ Operator { opName    = "A"
-             , opPre     = [Fact "P" []]
-             , opEffects = [Effect [] [Fact "Q" []] []]
-             }
-  , Operator { opName    = "B"
-             , opPre     = [Fact "Q" []]
-             , opEffects = [Effect [] [Fact "R" []] []]
-             }
-  ]
-
-testProb = Problem [Fact "P" []] [Fact "R" []]

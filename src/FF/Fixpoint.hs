@@ -6,7 +6,6 @@ module FF.Fixpoint where
 import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
-import           Control.Monad ( unless )
 import           Data.Array.IO ( readArray )
 import           Data.IORef ( readIORef, writeIORef )
 import           Data.Monoid ( mempty, mconcat )
@@ -14,33 +13,11 @@ import           Data.Monoid ( mempty, mconcat )
 
 -- Predicates ------------------------------------------------------------------
 
--- | Reset all references in the plan graph to their initial state.
-resetConnGraph :: ConnGraph -> IO ()
-resetConnGraph ConnGraph { .. } =
-  do amapM_ resetFact   cgFacts
-     amapM_ resetOper   cgOpers
-     amapM_ resetEffect cgEffects
-
-resetFact :: Fact -> IO ()
-resetFact Fact { .. } =
-  do writeIORef fLevel maxBound
-     writeIORef fIsTrue 0
-     writeIORef fIsGoal False
-
-
-resetOper :: Oper -> IO ()
-resetOper Oper { .. } = return ()
-
-resetEffect :: Effect -> IO ()
-resetEffect Effect { .. } =
-  do writeIORef eLevel maxBound
-     writeIORef eActivePre 0
-
 
 -- | Loop until the goal state is activated in the connection graph.  As the
 -- connection graph should only be built from domains that can activate all
 -- facts, and delete effects are ignored, this operation will terminate.
-buildFixpoint :: ConnGraph -> State -> Goals -> IO ()
+buildFixpoint :: ConnGraph -> State -> Goals -> IO Int
 buildFixpoint gr s0 g =
   do resetConnGraph gr
      loop 0 s0
@@ -49,13 +26,14 @@ buildFixpoint gr s0 g =
   loop factLevel facts =
     do effs <- mconcat `fmap` mapM (activateFact gr factLevel) (RS.toList facts)
        done <- allGoalsReached gr g
-       unless done $
-         do let effLevel = factLevel + 1
-            facts' <- mconcat `fmap` mapM (activateEffect gr effLevel) (RS.toList effs)
-
-            if RS.null facts'
-               then return ()
-               else loop (effLevel + 1) facts'
+       if done
+          then return factLevel
+          else do let effLevel = factLevel + 1
+                  facts' <- mconcat `fmap` mapM (activateEffect gr effLevel)
+                                                (RS.toList effs)
+                  if RS.null facts'
+                     then return factLevel
+                     else loop (effLevel + 1) facts'
 
 
 -- | All goals have been reached if they are all activated in the connection
