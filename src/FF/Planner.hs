@@ -6,6 +6,7 @@ import           FF.Extract
 import           FF.Fixpoint
 import qualified FF.RefSet as RS
 
+import           Control.Monad ( guard )
 import           Data.Array.IO ( readArray )
 import           Data.Maybe ( isJust )
 import qualified Data.IntMap.Strict as IM
@@ -52,6 +53,7 @@ findBetterState cg h s goal =
                           mbH <- computeHeuristic cg s' goal
                           print ("H", mbH)
                           return $ do h' <- mbH
+                                      guard (h' < h)
                                       return (h',s',ref)
 
               -- find the best option
