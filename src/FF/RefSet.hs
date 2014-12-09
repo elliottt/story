@@ -35,3 +35,12 @@ insert a (RefSet rs) = RefSet (IS.insert (fromRef a) rs)
 
 intersection :: RefSet a -> RefSet a -> RefSet a
 intersection (RefSet a) (RefSet b) = RefSet (IS.intersection a b)
+
+union :: RefSet a -> RefSet a -> RefSet a
+union (RefSet a) (RefSet b) = RefSet (a `IS.union` b)
+
+(\\) :: RefSet a -> RefSet a -> RefSet a
+RefSet a \\ RefSet del = RefSet (a IS.\\ del)
+
+isSubsetOf :: RefSet a -> RefSet a -> Bool
+isSubsetOf (RefSet a) (RefSet b) = IS.isSubsetOf a b

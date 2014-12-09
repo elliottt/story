@@ -84,42 +84,40 @@ extractPlan cg @ ConnGraph { .. } goals0 =
           then return acc
           else do e <- pickBest (factLevel - 1) (RS.toList fAdd)
                   Effect { .. } <- readArray cgEffects e
-                  gs' <- filterGoals gs factLevel (RS.toList ePre)
+                  gs' <- foldM (filterGoals factLevel) gs (RS.toList ePre)
                   mapM_ (markAdd factLevel) (RS.toList eAdds)
                   return (e:plan,gs')
 
-  filterGoals gs factLevel (f:fs) =
+  -- insert goals into the goal set for the level where they become true
+  filterGoals factLevel gs f =
     do Fact { .. } <- readArray cgFacts f
 
-       isGoal <- readIORef fIsGoal
        isTrue <- readIORef fIsTrue
+       l      <- readIORef fLevel
 
-       -- (isTrue /= factLevel) the goal was not solved by something else at
-       --                       this level
-       -- not isGoal            the goal hasn't already been added by something
-       --                       else
-       if isTrue /= factLevel && not isGoal
-          then
-            do writeIORef fIsGoal True
-
-               l <- readIORef fLevel
-               filterGoals (IM.insertWith mappend l (RS.singleton f) gs)
-                           factLevel fs
-
-          else filterGoals gs factLevel fs
-
-  filterGoals gs _ _ = return gs
+       -- isTrue /= factLevel - 2   some other action already achieved this fact
+       -- l /= 0                    this is not an initial fact
+       if isTrue /= factLevel - 2 && l /= 0
+          then return (IM.insertWith mappend l (RS.singleton f) gs)
+          else return gs
 
 
-  -- mark the fact as being added at i
+  -- mark the fact as being added at i - 2, and i
+  --
+  --  i      (isGoal) prevents achievers from being selected for facts that are
+  --         already true
+  --  i - 2  preconditions achieved by actions ahead of this one should not be
+  --         considered new goals
   markAdd i f =
     do Fact { .. } <- readArray cgFacts f
-       writeIORef fIsTrue i
+       writeIORef fIsGoal True    -- mark at i
+       writeIORef fIsTrue (i - 2) -- mark at i - 2
 
 
   -- pick the best effect that achieved this goal in the preceding effect
   -- layer, using the difficulty heuristic
   pickBest _ []        = fail "extractPlan: invalid connection graph"
+  pickBest _ [ref]     = return ref
   pickBest effLevel es = snd `fmap` foldM check (maxBound,undefined) es
     where
     check (d,e) r =
