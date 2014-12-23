@@ -23,17 +23,16 @@ buildFixpoint gr s0 g =
      loop 0 s0
 
   where
-  loop factLevel facts =
-    do effs <- mconcat `fmap` mapM (activateFact gr factLevel) (RS.toList facts)
+  loop level facts =
+    do effs <- mconcat `fmap` mapM (activateFact gr level) (RS.toList facts)
        done <- allGoalsReached gr g
        if done
-          then return factLevel
-          else do let effLevel = factLevel + 1
-                  facts' <- mconcat `fmap` mapM (activateEffect gr effLevel)
+          then return level
+          else do facts' <- mconcat `fmap` mapM (activateEffect gr level)
                                                 (RS.toList effs)
                   if RS.null facts'
-                     then return factLevel
-                     else loop (effLevel + 1) facts'
+                     then printEffects gr >> printFacts gr >> return level
+                     else loop (level + 1) facts'
 
 
 -- | All goals have been reached if they are all activated in the connection

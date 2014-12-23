@@ -25,7 +25,7 @@ type GoalSet = IM.IntMap Goals
 -- process returns immediately the value INFINITY, and doesn't complete the goal
 -- set.
 goalSet :: ConnGraph -> Goals -> IO (Maybe (Level,GoalSet))
-goalSet ConnGraph { .. } goals = go 1 IM.empty (RS.toList goals)
+goalSet ConnGraph { .. } goals = go 0 IM.empty (RS.toList goals)
   where
   go !m !gs (g:rest) =
     do Fact { .. } <- readArray cgFacts g
@@ -63,41 +63,41 @@ extractPlan cg @ ConnGraph { .. } goals0 =
   where
 
   -- solve goals that are added at this fact level.
-  solveGoals plan factLevel gs
-    | factLevel > 0 =
+  solveGoals plan level gs
+    | level > 0 =
       do (plan',gs') <-
-           case IM.lookup factLevel gs of
-             Just goals -> foldM (solveGoal factLevel) (plan,gs) (RS.toList goals)
+           case IM.lookup level gs of
+             Just goals -> foldM (solveGoal level) (plan,gs) (RS.toList goals)
              Nothing    -> return (plan,gs)
 
-         solveGoals plan' (factLevel - 2) gs'
+         solveGoals plan' (level - 1) gs'
 
     | otherwise =
          return (Just (plan,gs))
 
-  solveGoal factLevel acc@(plan,gs) g =
+  solveGoal level acc@(plan,gs) g =
     do Fact { .. } <- readArray cgFacts g
 
        -- the goal was solved by something else at this level
        isTrue <- readIORef fIsTrue
-       if isTrue == factLevel
+       if isTrue == level
           then return acc
-          else do e <- pickBest (factLevel - 1) (RS.toList fAdd)
+          else do e <- pickBest level (RS.toList fAdd)
                   Effect { .. } <- readArray cgEffects e
-                  gs' <- foldM (filterGoals factLevel) gs (RS.toList ePre)
-                  mapM_ (markAdd factLevel) (RS.toList eAdds)
+                  gs' <- foldM (filterGoals level) gs (RS.toList ePre)
+                  mapM_ (markAdd level) (RS.toList eAdds)
                   return (e:plan,gs')
 
   -- insert goals into the goal set for the level where they become true
-  filterGoals factLevel gs f =
+  filterGoals level gs f =
     do Fact { .. } <- readArray cgFacts f
 
        isTrue <- readIORef fIsTrue
        l      <- readIORef fLevel
 
-       -- isTrue /= factLevel - 2   some other action already achieved this fact
-       -- l /= 0                    this is not an initial fact
-       if isTrue /= factLevel - 2 && l /= 0
+       -- isTrue /= factLevel  some other action already achieved this fact
+       -- l /= 0               this is not an initial fact
+       if isTrue /= level && l /= 0
           then return (IM.insertWith mappend l (RS.singleton f) gs)
           else return gs
 
@@ -116,14 +116,14 @@ extractPlan cg @ ConnGraph { .. } goals0 =
 
   -- pick the best effect that achieved this goal in the preceding effect
   -- layer, using the difficulty heuristic
-  pickBest _ []        = fail "extractPlan: invalid connection graph"
-  pickBest _ [ref]     = return ref
-  pickBest effLevel es = snd `fmap` foldM check (maxBound,undefined) es
+  pickBest _ []     = fail "extractPlan: invalid connection graph"
+  pickBest _ [ref]  = return ref
+  pickBest level es = snd `fmap` foldM check (maxBound,undefined) es
     where
     check (d,e) r =
       do Effect { .. } <- readArray cgEffects r
          l <- readIORef eLevel
-         if effLevel /= l
+         if level /= l
             then return (d,e)
             else do d' <- difficulty cg r
                     let acc | d' < d    = (d',r)
@@ -136,7 +136,7 @@ extractPlan cg @ ConnGraph { .. } goals0 =
 helpfulActions :: ConnGraph -> RelaxedPlan -> GoalSet -> IO [EffectRef]
 helpfulActions cg es gs =
   do l1 <- layer1 cg es
-     case IM.lookup 2 gs of
+     case IM.lookup 1 gs of
        Just g1 -> filterM (isHelpful g1) l1
        _       -> return es
 
@@ -153,7 +153,7 @@ layer1 ConnGraph { .. } = loop []
   loop acc (e:es) = 
     do Effect { .. } <- readArray cgEffects e
        l <- readIORef eLevel
-       if l == 1
+       if l == 0
           then loop (e:acc) es
           else return (reverse acc)
 
