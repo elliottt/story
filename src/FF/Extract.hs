@@ -82,7 +82,7 @@ extractPlan cg @ ConnGraph { .. } goals0 =
        isTrue <- readIORef fIsTrue
        if isTrue == level
           then return acc
-          else do e <- pickBest level (RS.toList fAdd)
+          else do e <- pickBest (level - 1) (RS.toList fAdd)
                   Effect { .. } <- readArray cgEffects e
                   gs' <- foldM (filterGoals level) gs (RS.toList ePre)
                   mapM_ (markAdd level) (RS.toList eAdds)
@@ -114,25 +114,27 @@ extractPlan cg @ ConnGraph { .. } goals0 =
        writeIORef fIsTrue (i - 2) -- mark at i - 2
 
 
-  -- pick the best effect that achieved this goal in the preceding effect
-  -- layer, using the difficulty heuristic
+  -- pick the best effect that achieved this goal in the given layer, using the
+  -- difficulty heuristic
   pickBest _ []     = fail "extractPlan: invalid connection graph"
   pickBest _ [ref]  = return ref
-  pickBest level es = snd `fmap` foldM check (maxBound,undefined) es
+  pickBest level es = snd `fmap` foldM check (maxBound,error "pickBest") es
     where
-    check (d,e) r =
+    check acc@(d,_) r =
       do Effect { .. } <- readArray cgEffects r
          l <- readIORef eLevel
          if level /= l
-            then return (d,e)
+            then return acc
             else do d' <- difficulty cg r
-                    let acc | d' < d    = (d',r)
-                            | otherwise = (d,e)
-                    return $! acc
+                    let acc' | d' < d    = (d',r)
+                             | otherwise = acc
+                    return $! acc'
 
 
 -- Helpful Actions -------------------------------------------------------------
 
+-- | Helpful actions are those in the first layer of the relaxed plan, that
+-- contribute something directly to the next layer.
 helpfulActions :: ConnGraph -> RelaxedPlan -> GoalSet -> IO [EffectRef]
 helpfulActions cg es gs =
   do l1 <- layer1 cg es
@@ -146,7 +148,9 @@ helpfulActions cg es gs =
        return (not (RS.null (RS.intersection goals eAdds)))
 
 
--- | These are the actions of the first layer.
+-- | These are the actions of the first layer.  As the actions of the relaxed
+-- plan are sorted by their layer, this stops considering actions once their
+-- layer goes above 0.
 layer1 :: ConnGraph -> RelaxedPlan -> IO [EffectRef]
 layer1 ConnGraph { .. } = loop []
   where
