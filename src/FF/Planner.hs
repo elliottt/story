@@ -44,14 +44,12 @@ findBetterState cg h s goal =
 
        Just (plan,goalSet) ->
          do acts <- helpfulActions cg plan goalSet
-            print acts
             case acts of
               []  -> return Nothing
 
               [ref] -> do Effect { .. } <- readArray (cgEffects cg) ref
                           let s' = (s `RS.union` eAdds) RS.\\ eDels
                           mbH <- computeHeuristic cg s' goal
-                          print ("H", mbH)
                           return $ do h' <- mbH
                                       guard (h' < h)
                                       return (h',s',ref)

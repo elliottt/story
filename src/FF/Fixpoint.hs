@@ -31,7 +31,7 @@ buildFixpoint gr s0 g =
           else do facts' <- mconcat `fmap` mapM (activateEffect gr level)
                                                 (RS.toList effs)
                   if RS.null facts'
-                     then printEffects gr >> printFacts gr >> return level
+                     then return level
                      else loop (level + 1) facts'
 
 
