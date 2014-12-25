@@ -15,20 +15,31 @@ import           Data.List ( minimumBy )
 import           Data.Maybe ( isJust, fromMaybe, catMaybes )
 import           Data.Ord ( comparing )
 import qualified Data.Sequence as Seq
+import qualified Data.Text as T
 
 
-type Plan = [EffectRef]
+type Plan = [T.Text]
 
 findPlan :: I.Domain -> I.Problem -> IO (Maybe Plan)
 findPlan dom plan =
   do (s0,goal,cg) <- buildConnGraph dom plan
      hash         <- newHash
      mb <- enforcedHillClimbing hash cg s0 goal
-     if isJust mb
-        then return mb
-        else greedyBestFirst cg s0 goal
+     mkPlan cg =<< if isJust mb
+                      then return mb
+                      else greedyBestFirst cg s0 goal
+  where
+  mkPlan cg (Just effs) = Just `fmap` mapM (getOper cg) effs
+  mkPlan _  Nothing     = return Nothing
 
-enforcedHillClimbing :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Plan)
+  getOper cg eref =
+    do Effect { .. } <- readArray (cgEffects cg) eref
+       Oper { .. }   <- readArray (cgOpers cg) eOp
+       return oName
+
+type Steps = [EffectRef]
+
+enforcedHillClimbing :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
 enforcedHillClimbing hash cg s0 goal = loop [] (maxBound - 1) s0
   where
   loop plan h s =
@@ -93,7 +104,7 @@ computeHeuristic cg s goal =
      return $ do (plan,_) <- mb
                  return (length plan)
 
-greedyBestFirst :: ConnGraph -> State -> Goals -> IO (Maybe Plan)
+greedyBestFirst :: ConnGraph -> State -> Goals -> IO (Maybe Steps)
 greedyBestFirst cg s0 goals = error "greedy best-first"
 
 

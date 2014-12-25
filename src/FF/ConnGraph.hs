@@ -9,8 +9,9 @@ import qualified FF.RefSet as RS
 import           Control.Monad ( zipWithM )
 import           Data.Array.IO
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
-import qualified Data.Set as Set
 import qualified Data.Map as Map
+import qualified Data.Set as Set
+import qualified Data.Text as T
 
 
 -- Connection Graph ------------------------------------------------------------
@@ -26,6 +27,7 @@ data ConnGraph = ConnGraph { cgFacts   :: !(IOArray FactRef Fact)
                            , cgOpers   :: !(IOArray OperRef Oper)
                            , cgEffects :: !(IOArray EffectRef Effect)
                            }
+
 
 newtype FactRef = FactRef Int
                   deriving (Show,Eq,Ord,Ix,Enum)
@@ -52,12 +54,17 @@ data Fact = Fact { fProp  :: !I.Fact
                  }
 
 data Oper = Oper { oEffects :: !Effects
+                   -- ^ Effects that correspond to instantiations of this
+                   -- operator
+                 , oName :: !T.Text
                  }
 
 data Effect = Effect { ePre       :: !Facts
                      , eNumPre    :: !Int
                      , eAdds      :: !Facts
                      , eDels      :: !Facts
+                     , eOp        :: !OperRef
+                       -- ^ The operator that this effect came from
 
                      , eInPlan    :: !(IORef Bool)
                        -- ^ Whether or not this effect is a member of the
@@ -86,12 +93,13 @@ instance RS.Ref EffectRef where
 
 buildConnGraph :: I.Domain -> I.Problem -> IO (State,Goals,ConnGraph)
 buildConnGraph dom prob =
-  do cgOpers   <- newListArray (OperRef 0, OperRef (length opers - 1)) opers
-
-     facts   <- mapM mkFact allFacts
+  do facts   <- mapM mkFact allFacts
      cgFacts <- newListArray (FactRef 0, FactRef (length facts - 1)) facts
 
-     effs      <- zipWithM (mkEffect cgFacts) (map EffectRef [0 ..]) allEffs
+     opers   <- mapM mkOper (I.domOperators dom)
+     cgOpers <- newListArray (OperRef 0, OperRef (length opers - 1)) opers
+
+     effs      <- zipWithM (mkEffect cgOpers cgFacts) (map EffectRef [0 ..]) allEffs
      cgEffects <- newListArray (EffectRef 0, EffectRef (length effs - 1)) effs
 
      return (state,goal,ConnGraph { .. })
@@ -106,13 +114,9 @@ buildConnGraph dom prob =
   factRefs = Map.fromList (zip allFacts (map FactRef [0 ..]))
 
   -- all ground effects, extended with the preconditions from their operators
-  expanded = map I.expandEffects (I.domOperators dom)
-  allEffs  = concat expanded
-  effRefs  = Map.fromList (zip allEffs (map EffectRef [0 ..]))
-
-  -- operators, with references to their effects
-  opers     = map mkOper expanded
-  mkOper es = Oper { oEffects = RS.fromList (map (effRefs Map.!) es) }
+  allEffs = [ (oref, eff) | ix <- [ 0 .. ], let oref = OperRef ix
+                           | op <- I.domOperators dom, eff <- I.expandEffects op ]
+  effRefs = Map.fromList (zip allEffs (map EffectRef [0 ..]))
 
   mkFact fProp =
     do fLevel  <- newIORef 0
@@ -123,7 +127,12 @@ buildConnGraph dom prob =
                    , fDel     = RS.empty
                    , .. }
 
-  mkEffect facts ix e =
+  mkOper op =
+    do let oEffects = RS.empty
+           oName    = I.opName op
+       return Oper { .. }
+
+  mkEffect opers facts ix (op,e) =
     do eLevel     <- newIORef 0
        eActivePre <- newIORef 0
        eInPlan    <- newIORef False
@@ -134,7 +143,11 @@ buildConnGraph dom prob =
                              , eNumPre = length (I.ePre e)
                              , eAdds   = refs (I.eAdd e)
                              , eDels   = refs (I.eDel e)
+                             , eOp     = op
                              , .. }
+
+       Oper { .. } <- readArray opers op
+       writeArray opers op Oper { oEffects = RS.insert ix oEffects, .. }
 
        -- add edges from the facts this effect's pre-conds/adds/deletes
        mapM_ pre (RS.toList (ePre  eff))
