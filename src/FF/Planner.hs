@@ -2,7 +2,7 @@
 module FF.Planner where
 
 import           FF.ConnGraph
-import           FF.Extract
+import           FF.Extract ( extractPlan, helpfulActions )
 import           FF.Fixpoint
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
@@ -10,7 +10,6 @@ import qualified FF.RefSet as RS
 import           Control.Monad ( guard )
 import           Data.Array.IO ( readArray )
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
-import qualified Data.IntMap.Strict as IM
 import           Data.List ( minimumBy )
 import           Data.Maybe ( isJust, fromMaybe, catMaybes )
 import           Data.Ord ( comparing )
@@ -55,18 +54,18 @@ findBetterState :: Hash -> ConnGraph -> Int -> State -> Goals
                 -> IO (Maybe (Int,State,EffectRef))
 findBetterState hash cg h s goal =
   do _  <- buildFixpoint cg s goal
-     mb <- extractPlan cg goal
-     case mb of
+     mbPlan <- extractPlan cg goal
+     case mbPlan of
 
        Just (plan,goalSet) ->
          do acts <- helpfulActions cg plan goalSet
             case acts of
               []  -> return Nothing
 
-              [ref] -> do mb <- lookupHeuristic ref
-                          case mb of
-                            Just res@(h',_,_) | h' < h -> return mb
-                            _                          -> return Nothing
+              [ref] -> do mbH <- lookupHeuristic ref
+                          case mbH of
+                            Just (h',_,_) | h' < h -> return mbH
+                            _                      -> return Nothing
 
               -- find the best option
               as -> do mbs <- mapM lookupHeuristic as
@@ -89,11 +88,11 @@ findBetterState hash cg h s goal =
        let s' = (s `RS.union` eAdds) RS.\\ eDels
        mb <- lookupState hash s'
        case mb of
-         Just h  -> return (Just (h, s', ref))
+         Just h' -> return (Just (h', s', ref))
          Nothing -> do mbH <- computeHeuristic cg s' goal
                        hashState hash s' (fromMaybe maxBound mbH)
-                       return $ do h <- mbH
-                                   return (h, s', ref)
+                       return $ do h' <- mbH
+                                   return (h', s', ref)
 
 -- | Compute the size of the relaxed plan produced by the given starting state
 -- and goals.
