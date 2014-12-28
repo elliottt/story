@@ -1,5 +1,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ParallelListComp #-}
 
 module FF.ConnGraph where
 
@@ -115,7 +116,8 @@ buildConnGraph dom prob =
 
   -- all ground effects, extended with the preconditions from their operators
   allEffs = [ (oref, eff) | ix <- [ 0 .. ], let oref = OperRef ix
-                           | op <- I.domOperators dom, eff <- I.expandEffects op ]
+                          | op <- I.domOperators dom, eff <- I.expandEffects op
+                          ]
   effRefs = Map.fromList (zip allEffs (map EffectRef [0 ..]))
 
   mkFact fProp =
