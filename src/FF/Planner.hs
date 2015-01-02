@@ -43,13 +43,13 @@ findPlan dom plan =
 type Steps = [EffectRef]
 
 enforcedHillClimbing :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-enforcedHillClimbing hash cg s0 goal = loop [] (maxBound - 1) s0
+enforcedHillClimbing hash cg s0 goal = loop Seq.empty (maxBound - 1) s0
   where
   loop plan h s =
     do mb <- findBetterState hash cg h s goal
        case mb of
-         Just (h',s',ref) | h' == 0   -> return (Just (reverse (ref:plan)))
-                          | otherwise -> loop (ref:plan) h' s'
+         Just (h',s',ref) | h' == 0   -> return (Just (F.toList plan))
+                          | otherwise -> loop (plan Seq.|> ref) h' s'
          Nothing                      -> return Nothing
 
 -- | Find a state whose heuristic value is strictly smaller than the current
@@ -71,6 +71,37 @@ findBetterState hash cg h s goal =
        -- no plan
        Nothing ->
          return Nothing
+
+
+-- Greedy Best-first Search ----------------------------------------------------
+
+greedyBestFirst :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
+greedyBestFirst hash cg s0 goal = loop Seq.empty s0 maxBound
+  where
+
+  -- when the heuristic value hits zero, the goals have been achieved
+  loop effs _ 0 =
+       return (Just (F.toList effs))
+
+  loop effs s h =
+    do _      <- buildFixpoint cg s goal
+       mbPlan <- extractPlan cg goal
+       case mbPlan of
+
+         -- found a plan, compute the heuristic for each action in the first
+         -- layer
+         Just (plan,_) ->
+           do mb <- successor hash cg s goal =<< layer1 cg plan
+              case mb of
+                Just (h',s',ref) -> loop (effs Seq.|> ref) s' (min h h')
+                Nothing          -> return Nothing
+
+         -- can't find a path to the goal from here
+         Nothing ->
+              return Nothing
+
+
+-- Utilities -------------------------------------------------------------------
 
 -- | Apply effects to the current state, returning the minimal next choice (if
 -- it exists).
@@ -121,34 +152,6 @@ computeHeuristic hash cg s goal =
        mb <- extractPlan cg goal
        return $ do (plan,_) <- mb
                    return (length plan)
-
-
--- Greedy Best-first Search ----------------------------------------------------
-
-greedyBestFirst :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-greedyBestFirst hash cg s0 goal = loop Seq.empty s0 maxBound
-  where
-
-  -- when the heuristic value hits zero, the goals have been achieved
-  loop effs _ 0 =
-       return (Just (F.toList effs))
-
-  loop effs s h =
-    do _      <- buildFixpoint cg s goal
-       mbPlan <- extractPlan cg goal
-       case mbPlan of
-
-         -- found a plan, compute the heuristic for each action in the first
-         -- layer
-         Just (plan,_) ->
-           do mb <- successor hash cg s goal =<< layer1 cg plan
-              case mb of
-                Just (h',s',ref) -> loop (effs Seq.|> ref) s' (min h h')
-                Nothing          -> return Nothing
-
-         -- can't find a path to the goal from here
-         Nothing ->
-              return Nothing
 
 
 -- State Hashing ---------------------------------------------------------------
