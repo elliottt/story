@@ -118,8 +118,6 @@ buildConnGraph dom prob =
   allEffs = [ (oref, eff) | ix <- [ 0 .. ], let oref = OperRef ix
                           | op <- I.domOperators dom, eff <- I.expandEffects op
                           ]
-  effRefs = Map.fromList (zip allEffs (map EffectRef [0 ..]))
-
   mkFact fProp =
     do fLevel  <- newIORef 0
        fIsTrue <- newIORef 0
