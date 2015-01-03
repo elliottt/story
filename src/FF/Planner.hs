@@ -2,7 +2,7 @@
 module FF.Planner where
 
 import           FF.ConnGraph
-import           FF.Extract ( extractPlan, helpfulActions, layer1 )
+import           FF.Extract ( extractPlan, helpfulActions, getActions )
 import           FF.Fixpoint
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
@@ -27,7 +27,7 @@ findPlan dom plan =
      mb <- enforcedHillClimbing hash cg s0 goal
      mkPlan cg =<< if isJust mb
                       then return mb
-                      else greedyBestFirst hash cg s0 goal
+                      else print "BFS" >> greedyBestFirst hash cg s0 goal
   where
   mkPlan cg (Just effs) = Just `fmap` mapM (getOper cg) effs
   mkPlan _  Nothing     = return Nothing
@@ -60,20 +60,12 @@ enforcedHillClimbing hash cg s0 goal = loop Seq.empty (maxBound - 1) s0
 findBetterState :: Hash -> ConnGraph -> Int -> State -> Goals
                 -> IO (Maybe (Int,State,EffectRef))
 findBetterState hash cg h s goal =
-  do _  <- buildFixpoint cg s goal
-     mbPlan <- extractPlan cg goal
-     case mbPlan of
-
-       Just (plan,goalSet) ->
-         do acts  <- helpfulActions cg plan goalSet
-            succs <- successors hash cg s goal acts
-            case succs of
-              res@(h',_,_) : _ | h' < h -> return (Just res)
-              _                         -> return Nothing
-
-       -- no plan
-       Nothing ->
-         return Nothing
+  do effs  <- buildFixpoint cg s goal
+     acts  <- helpfulActions cg s
+     succs <- successors hash cg s goal acts
+     case succs of
+       res@(h',_,_) : _ | h' < h -> return (Just res)
+       _                         -> return Nothing
 
 
 -- Greedy Best-first Search ----------------------------------------------------
@@ -91,28 +83,19 @@ greedyBestFirst hash cg s0 goal =
        return (Just (F.toList effs))
 
   loop effs states s h orElse =
-    do _      <- buildFixpoint cg s goal
-       mbPlan <- extractPlan cg goal
-       case mbPlan of
+    do acts     <- buildFixpoint cg s goal
+       (acts,_) <- getActions cg s
+       succs    <- successors hash cg s goal (RS.toList acts)
 
-         -- found a plan, compute the heuristic for each action in the first
-         -- layer
-         Just (plan,_) ->
-           do succs <- successors hash cg s goal =<< layer1 cg plan
+       let tryAll ((h',s',ref):rest)
+             | isCycle s' states = tryAll rest
+             | otherwise         = loop (effs Seq.|> ref)
+                                        (RT.insert s' True states)
+                                        s' (min h h') (tryAll rest)
+           tryAll [] =
+               orElse
 
-              let tryAll ((h',s',ref):rest)
-                    | isCycle s' states = tryAll rest
-                    | otherwise         = loop (effs Seq.|> ref)
-                                               (RT.insert s' True states)
-                                               s' (min h h') (tryAll rest)
-                  tryAll [] =
-                      orElse
-
-              tryAll succs
-
-         -- can't find a path to the goal from here
-         Nothing ->
-              orElse
+       tryAll succs
 
 
 -- Utilities -------------------------------------------------------------------
@@ -136,12 +119,6 @@ successors hash cg s goal refs =
        return $ do h' <- mbH
                    return (h',s',ref)
 
--- | Apply an effect to the state given, returning a new state.
-applyEffect :: ConnGraph -> EffectRef -> State -> IO State
-applyEffect cg ref s =
-  do Effect { .. } <- readArray (cgEffects cg) ref
-     return $! (s `RS.union` eAdds) RS.\\ eDels
-
 -- compute the heuristic value for the state that results after applying the
 -- given effect, and hash it.
 computeHeuristic :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Int)
@@ -160,7 +137,7 @@ computeHeuristic hash cg s goal =
   -- Compute the size of the relaxed plan produced by the given starting state
   -- and goals.
   heuristic =
-    do _  <- buildFixpoint cg s goal
+    do x  <- buildFixpoint cg s goal
        mb <- extractPlan cg goal
        return $ do (plan,_) <- mb
                    return (length plan)

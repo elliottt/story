@@ -4,6 +4,7 @@
 module FF.Input where
 
 import qualified Data.Set as Set
+import           Data.String ( IsString(..) )
 import qualified Data.Text as T
 
 
@@ -30,6 +31,9 @@ data Effect = Effect { ePre :: [Fact]
 -- | A fact is a predicate, applied to zero or more constants.
 data Fact = Fact !T.Text [T.Text]
             deriving (Show,Eq,Ord)
+
+instance IsString Fact where
+  fromString str = Fact (fromString str) []
 
 
 -- Utilities -------------------------------------------------------------------

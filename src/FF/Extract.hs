@@ -11,7 +11,7 @@ import           Control.Monad ( foldM, filterM )
 import           Data.Array.IO ( readArray )
 import           Data.IORef ( readIORef, writeIORef )
 import qualified Data.IntMap.Strict as IM
-import           Data.Monoid ( mappend )
+import           Data.Monoid ( mappend, mconcat )
 
 
 -- | A map from fact level to the goals that appear there.
@@ -44,7 +44,9 @@ goalSet ConnGraph { .. } goals = go 0 IM.empty (RS.toList goals)
 difficulty :: ConnGraph -> EffectRef -> IO Level
 difficulty ConnGraph { .. } e =
   do Effect { .. } <- readArray cgEffects e
-     foldM minPrecondLevel maxBound (RS.toList ePre)
+     if RS.null ePre
+        then return 0
+        else foldM minPrecondLevel maxBound (RS.toList ePre)
   where
   minPrecondLevel l ref =
     do Fact { .. } <- readArray cgFacts ref
@@ -133,32 +135,38 @@ extractPlan cg @ ConnGraph { .. } goals0 =
 
 -- Helpful Actions -------------------------------------------------------------
 
+-- | Given a graph that has had its fixpoint calculated, extract the actions
+-- of the first two layers.
+getActions :: ConnGraph -> State -> IO (Effects,Effects)
+getActions cg s =
+  do es0 <- mconcat `fmap` mapM (enabledEffects 0) (RS.toList s)
+     s'  <- foldM (flip (applyEffect cg)) s (RS.toList es0)
+     es1 <- mconcat `fmap` mapM (enabledEffects 1) (RS.toList s')
+     return (es0,es1)
+  where
+  enabledEffects level ref =
+    do Fact { .. } <- readArray (cgFacts cg) ref
+       mconcat `fmap` mapM (checkEffect level) (RS.toList fPreCond)
+
+  checkEffect level ref =
+    do Effect { .. } <- readArray (cgEffects cg) ref
+       l <- readIORef eLevel
+       if l == level
+          then return (RS.singleton ref)
+          else return RS.empty
+
 -- | Helpful actions are those in the first layer of the relaxed plan, that
 -- contribute something directly to the next layer.
-helpfulActions :: ConnGraph -> RelaxedPlan -> GoalSet -> IO [EffectRef]
-helpfulActions cg es gs =
-  do l1 <- layer1 cg es
-     case IM.lookup 1 gs of
-       Just g1 -> filterM (isHelpful g1) l1
-       _       -> return es
-
+helpfulActions :: ConnGraph -> State -> IO [EffectRef]
+helpfulActions cg s =
+  do (es0,es1) <- getActions cg s
+     goals     <- mconcat `fmap` mapM genGoals (RS.toList es1)
+     filterM (isHelpful goals) (RS.toList es0)
   where
   isHelpful goals ref =
     do Effect { .. } <- readArray (cgEffects cg) ref
        return (not (RS.null (RS.intersection goals eAdds)))
 
-
--- | These are the actions of the first layer.  As the actions of the relaxed
--- plan are sorted by their layer, this stops considering actions once their
--- layer goes above 0.
-layer1 :: ConnGraph -> RelaxedPlan -> IO [EffectRef]
-layer1 ConnGraph { .. } = loop []
-  where
-  loop acc (e:es) = 
-    do Effect { .. } <- readArray cgEffects e
-       l <- readIORef eLevel
-       if l == 0
-          then loop (e:acc) es
-          else return (reverse acc)
-
-  loop acc [] = return (reverse acc)
+  genGoals ref =
+    do Effect { .. } <- readArray (cgEffects cg) ref
+       return ePre

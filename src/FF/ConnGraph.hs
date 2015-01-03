@@ -90,6 +90,15 @@ instance RS.Ref EffectRef where
   fromRef (EffectRef r) = r
 
 
+-- Utility Functions -----------------------------------------------------------
+
+-- | Apply an effect to the state given, returning a new state.
+applyEffect :: ConnGraph -> EffectRef -> State -> IO State
+applyEffect cg ref s =
+  do Effect { .. } <- readArray (cgEffects cg) ref
+     return $! (s `RS.union` eAdds) RS.\\ eDels
+
+
 -- Input Processing ------------------------------------------------------------
 
 buildConnGraph :: I.Domain -> I.Problem -> IO (State,Goals,ConnGraph)
@@ -113,6 +122,7 @@ buildConnGraph dom prob =
   -- all ground facts
   allFacts = Set.toList (I.probFacts prob `Set.union` I.domFacts dom)
   factRefs = Map.fromList (zip allFacts (map FactRef [0 ..]))
+  factIds  = Map.elems factRefs
 
   -- all ground effects, extended with the preconditions from their operators
   allEffs = [ (oref, eff) | ix <- [ 0 .. ], let oref = OperRef ix
@@ -150,7 +160,9 @@ buildConnGraph dom prob =
        writeArray opers op Oper { oEffects = RS.insert ix oEffects, .. }
 
        -- add edges from the facts this effect's pre-conds/adds/deletes
-       mapM_ pre (RS.toList (ePre  eff))
+       let preconditions | RS.null (ePre eff) = factIds
+                         | otherwise          = RS.toList (ePre eff)
+       mapM_ pre preconditions
        mapM_ add (RS.toList (eAdds eff))
        mapM_ del (RS.toList (eDels eff))
 
@@ -229,7 +241,10 @@ printEffect ref Effect { .. } =
      lev <- readIORef eLevel
 
      putStr $ unlines
-       [ "  level: " ++ show lev
+       [ " level:    " ++ show lev
+       , " requires: " ++ show ePre
+       , " adds:     " ++ show eAdds
+       , " dels:     " ++ show eDels
        ]
 
 amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> IOArray i e -> IO ()

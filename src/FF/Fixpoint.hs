@@ -1,7 +1,9 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module FF.Fixpoint where
+module FF.Fixpoint (
+    buildFixpoint
+  ) where
 
 import           FF.ConnGraph
 import qualified FF.RefSet as RS
@@ -13,15 +15,15 @@ import           Data.Monoid ( mempty, mconcat )
 
 -- Predicates ------------------------------------------------------------------
 
-
 -- | Loop until the goal state is activated in the connection graph.  As the
 -- connection graph should only be built from domains that can activate all
--- facts, and delete effects are ignored, this operation will terminate.
+-- facts, and delete effects are ignored, this operation will terminate.  The
+-- set of effects returned is the set of effects that are immediately applicable
+-- to the initial state.
 buildFixpoint :: ConnGraph -> State -> Goals -> IO Int
 buildFixpoint gr s0 g =
   do resetConnGraph gr
      loop 0 s0
-
   where
   loop level facts =
     do effs <- mconcat `fmap` mapM (activateFact gr level) (RS.toList facts)
@@ -69,7 +71,7 @@ activateFact ConnGraph { .. } level ref =
        let pcs' = pcs + 1
        writeIORef eActivePre $! pcs'
 
-       if pcs' == eNumPre
+       if pcs' >= eNumPre
           then return (RS.singleton eff)
           else return mempty
 
