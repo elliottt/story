@@ -60,7 +60,7 @@ enforcedHillClimbing hash cg s0 goal = loop Seq.empty (maxBound - 1) s0
 findBetterState :: Hash -> ConnGraph -> Int -> State -> Goals
                 -> IO (Maybe (Int,State,EffectRef))
 findBetterState hash cg h s goal =
-  do effs  <- buildFixpoint cg s goal
+  do _     <- buildFixpoint cg s goal
      acts  <- helpfulActions cg s
      succs <- successors hash cg s goal acts
      case succs of
