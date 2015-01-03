@@ -160,8 +160,10 @@ getActions cg s =
 helpfulActions :: ConnGraph -> State -> IO [EffectRef]
 helpfulActions cg s =
   do (es0,es1) <- getActions cg s
-     goals     <- mconcat `fmap` mapM genGoals (RS.toList es1)
-     filterM (isHelpful goals) (RS.toList es0)
+     if RS.null es1
+        then return (RS.toList es0)
+        else do goals     <- mconcat `fmap` mapM genGoals (RS.toList es1)
+                filterM (isHelpful goals) (RS.toList es0)
   where
   isHelpful goals ref =
     do Effect { .. } <- readArray (cgEffects cg) ref
