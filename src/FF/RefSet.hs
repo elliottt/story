@@ -44,3 +44,8 @@ RefSet a \\ RefSet del = RefSet (a IS.\\ del)
 
 isSubsetOf :: RefSet a -> RefSet a -> Bool
 isSubsetOf (RefSet a) (RefSet b) = IS.isSubsetOf a b
+
+minView :: Ref a => RefSet a -> Maybe (a,RefSet a)
+minView (RefSet rs) =
+  do (a,rs') <- IS.minView rs
+     return (toRef a,RefSet rs')

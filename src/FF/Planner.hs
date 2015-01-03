@@ -6,12 +6,12 @@ import           FF.Extract ( extractPlan, helpfulActions, layer1 )
 import           FF.Fixpoint
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
+import qualified FF.RefTrie as RT
 
-import           Control.Monad ( guard )
 import           Data.Array.IO ( readArray )
 import qualified Data.Foldable as F
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
-import           Data.List ( minimumBy )
+import           Data.List ( sortBy )
 import           Data.Maybe ( isJust, fromMaybe, catMaybes )
 import           Data.Ord ( comparing )
 import qualified Data.Sequence as Seq
@@ -48,9 +48,12 @@ enforcedHillClimbing hash cg s0 goal = loop Seq.empty (maxBound - 1) s0
   loop plan h s =
     do mb <- findBetterState hash cg h s goal
        case mb of
-         Just (h',s',ref) | h' == 0   -> return (Just (F.toList plan))
-                          | otherwise -> loop (plan Seq.|> ref) h' s'
-         Nothing                      -> return Nothing
+
+         Just (h',s',ref)
+           | h' == 0   -> return (Just (F.toList (plan Seq.|> ref)))
+           | otherwise -> loop (plan Seq.|> ref) h' s'
+
+         Nothing -> return Nothing
 
 -- | Find a state whose heuristic value is strictly smaller than the current
 -- state.
@@ -62,11 +65,11 @@ findBetterState hash cg h s goal =
      case mbPlan of
 
        Just (plan,goalSet) ->
-         do acts <- helpfulActions cg plan goalSet
-            mb   <- successor hash cg s goal acts
-            return $! do res@(h',_,_) <- mb
-                         guard (h' > h)
-                         return res
+         do acts  <- helpfulActions cg plan goalSet
+            succs <- successors hash cg s goal acts
+            case succs of
+              res@(h',_,_) : _ | h' < h -> return (Just res)
+              _                         -> return Nothing
 
        -- no plan
        Nothing ->
@@ -76,14 +79,18 @@ findBetterState hash cg h s goal =
 -- Greedy Best-first Search ----------------------------------------------------
 
 greedyBestFirst :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-greedyBestFirst hash cg s0 goal = loop Seq.empty s0 maxBound
+greedyBestFirst hash cg s0 goal =
+  loop Seq.empty RT.empty s0 maxBound (return Nothing)
   where
 
+  -- there's a cycle if we've seen this state before
+  isCycle s states = RT.findWithDefault False s states
+
   -- when the heuristic value hits zero, the goals have been achieved
-  loop effs _ 0 =
+  loop effs _ _ 0 _ =
        return (Just (F.toList effs))
 
-  loop effs s h =
+  loop effs states s h orElse =
     do _      <- buildFixpoint cg s goal
        mbPlan <- extractPlan cg goal
        case mbPlan of
@@ -91,28 +98,33 @@ greedyBestFirst hash cg s0 goal = loop Seq.empty s0 maxBound
          -- found a plan, compute the heuristic for each action in the first
          -- layer
          Just (plan,_) ->
-           do mb <- successor hash cg s goal =<< layer1 cg plan
-              case mb of
-                Just (h',s',ref) -> loop (effs Seq.|> ref) s' (min h h')
-                Nothing          -> return Nothing
+           do succs <- successors hash cg s goal =<< layer1 cg plan
+
+              let tryAll ((h',s',ref):rest)
+                    | isCycle s' states = tryAll rest
+                    | otherwise         = loop (effs Seq.|> ref)
+                                               (RT.insert s' True states)
+                                               s' (min h h') (tryAll rest)
+                  tryAll [] =
+                      orElse
+
+              tryAll succs
 
          -- can't find a path to the goal from here
          Nothing ->
-              return Nothing
+              orElse
 
 
 -- Utilities -------------------------------------------------------------------
 
 -- | Apply effects to the current state, returning the minimal next choice (if
 -- it exists).
-successor :: Hash -> ConnGraph -> State -> Goals
-          -> [EffectRef]
-          -> IO (Maybe (Int,State,EffectRef))
-successor hash cg s goal refs =
+successors :: Hash -> ConnGraph -> State -> Goals
+           -> [EffectRef]
+           -> IO [(Int,State,EffectRef)]
+successors hash cg s goal refs =
   do mbs <- mapM heuristic refs
-     case catMaybes mbs of
-       [] -> return Nothing
-       hs -> return $! Just $! minimumBy (comparing fst3) hs
+     return $! sortBy (comparing fst3) (catMaybes mbs)
 
   where
 
