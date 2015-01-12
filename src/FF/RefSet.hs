@@ -2,6 +2,7 @@
 
 module FF.RefSet where
 
+import           Data.Hashable ( Hashable(..) )
 import qualified Data.IntSet as IS
 import           Data.Monoid ( Monoid )
 
@@ -10,6 +11,10 @@ import           Data.Monoid ( Monoid )
 
 newtype RefSet a = RefSet IS.IntSet
                    deriving (Show,Eq,Monoid)
+
+instance Hashable (RefSet a) where
+  hashWithSalt z (RefSet is) = IS.foldl' hashWithSalt z is
+
 
 class Ref a where
   toRef   :: Int -> a

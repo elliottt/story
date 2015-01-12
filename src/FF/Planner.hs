@@ -6,12 +6,11 @@ import           FF.Extract ( extractPlan, helpfulActions, getActions )
 import           FF.Fixpoint
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
-import qualified FF.RefTrie as RT
 
 import           Data.Array.IO ( readArray )
-import qualified Data.Foldable as F
+import qualified Data.HashSet as HS
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
-import           Data.List ( sortBy )
+import           Data.List ( sortBy, insertBy )
 import           Data.Maybe ( isJust, fromMaybe, catMaybes )
 import           Data.Ord ( comparing )
 import qualified Data.Sequence as Seq
@@ -27,7 +26,7 @@ findPlan dom plan =
      mb <- enforcedHillClimbing hash cg s0 goal
      mkPlan cg =<< if isJust mb
                       then return mb
-                      else print "BFS" >> greedyBestFirst hash cg s0 goal
+                      else greedyBestFirst hash cg s0 goal
   where
   mkPlan cg (Just effs) = Just `fmap` mapM (getOper cg) effs
   mkPlan _  Nothing     = return Nothing
@@ -43,81 +42,103 @@ findPlan dom plan =
 type Steps = [EffectRef]
 
 enforcedHillClimbing :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-enforcedHillClimbing hash cg s0 goal = loop Seq.empty (maxBound - 1) s0
+enforcedHillClimbing hash cg s0 goal = loop (initialNode s0)
   where
-  loop plan h s =
-    do mb <- findBetterState hash cg h s goal
+
+  loop n =
+    do mb <- findBetterState hash cg n goal
        case mb of
 
-         Just (h',s',ref)
-           | h' == 0   -> return (Just (F.toList (plan Seq.|> ref)))
-           | otherwise -> loop (plan Seq.|> ref) h' s'
+         Just n'
+           | nodeMeasure n' == 0 -> return (Just (extractPath n'))
+           | otherwise           -> loop n'
 
          Nothing -> return Nothing
 
 -- | Find a state whose heuristic value is strictly smaller than the current
 -- state.
-findBetterState :: Hash -> ConnGraph -> Int -> State -> Goals
-                -> IO (Maybe (Int,State,EffectRef))
-findBetterState hash cg h s goal =
-  do _     <- buildFixpoint cg s goal
-     acts  <- helpfulActions cg s
-     succs <- successors hash cg s goal acts
+findBetterState :: Hash -> ConnGraph -> Node -> Goals -> IO (Maybe Node)
+findBetterState hash cg n goal =
+  do _     <- buildFixpoint cg (nodeState n) goal
+     acts  <- helpfulActions cg (nodeState n)
+     succs <- successors hash cg n goal acts
      case succs of
-       res@(h',_,_) : _ | h' < h -> return (Just res)
-       _                         -> return Nothing
+       n' : _ | nodeMeasure n' < nodeMeasure n -> return (Just n')
+       _                                       -> return Nothing
 
 
 -- Greedy Best-first Search ----------------------------------------------------
 
 greedyBestFirst :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-greedyBestFirst hash cg s0 goal =
-  loop Seq.empty RT.empty s0 maxBound (return Nothing)
+greedyBestFirst hash cg s0 goal = go HS.empty [initialNode s0]
   where
 
-  -- there's a cycle if we've seen this state before
-  isCycle s states = RT.findWithDefault False s states
+  go seen (n @ Node { .. } :rest)
+    | nodeMeasure == 0 =
+         return (Just (extractPath n))
 
-  -- when the heuristic value hits zero, the goals have been achieved
-  loop effs _ _ 0 _ =
-       return (Just (F.toList effs))
+      -- don't generate children for nodes that have already been visited
+    | nodeState `HS.member` seen =
+         go seen rest
 
-  loop effs states s h orElse =
-    do acts     <- buildFixpoint cg s goal
-       (acts,_) <- getActions cg s
-       succs    <- successors hash cg s goal (RS.toList acts)
+    | otherwise =
+      do _        <- buildFixpoint cg nodeState goal
+         (effs,_) <- getActions cg nodeState
+         children <- successors hash cg n goal (RS.toList effs)
+         go (HS.insert nodeState seen) (foldr insertChild rest children)
 
-       let tryAll ((h',s',ref):rest)
-             | isCycle s' states = tryAll rest
-             | otherwise         = loop (effs Seq.|> ref)
-                                        (RT.insert s' True states)
-                                        s' (min h h') (tryAll rest)
-           tryAll [] =
-               orElse
+  go _ [] = return Nothing
 
-       tryAll succs
+  insertChild = insertBy (comparing nodeMeasure)
 
 
 -- Utilities -------------------------------------------------------------------
 
--- | Apply effects to the current state, returning the minimal next choice (if
--- it exists).
-successors :: Hash -> ConnGraph -> State -> Goals
-           -> [EffectRef]
-           -> IO [(Int,State,EffectRef)]
-successors hash cg s goal refs =
+-- | Search nodes.
+data Node = Node { nodeState :: State
+                   -- ^ The state after the effect was applied
+                 , nodeOp :: EffectRef
+                   -- ^ The effect applied to arrive at this state
+                 , nodeMeasure :: !Int
+                   -- ^ The heuristic value of this node
+                 , nodeParent :: Maybe Node
+                   -- ^ The state before this one in the plan
+                 } deriving (Show)
+
+initialNode :: State -> Node
+initialNode nodeState = Node { nodeParent  = Nothing
+                             , nodeOp      = EffectRef (-1)
+                             , nodeMeasure = maxBound
+                             , ..
+                             }
+
+-- | Extract the set of effects applied to get to this state.  This ignores the
+-- root node, as it represents the initial state.
+extractPath :: Node -> [EffectRef]
+extractPath  = go []
+  where
+  go plan Node { .. } =
+    case nodeParent of
+      Just p  -> go (nodeOp : plan) p
+      Nothing -> plan
+
+
+-- | Apply effects to the current state, returning the valid choices ordered by
+-- their heuristic value.
+successors :: Hash -> ConnGraph -> Node -> Goals -> [EffectRef] -> IO [Node]
+successors hash cg parent goal refs =
   do mbs <- mapM heuristic refs
-     return $! sortBy (comparing fst3) (catMaybes mbs)
+     return $! sortBy (comparing nodeMeasure) (catMaybes mbs)
 
   where
 
-  fst3 (a,_,_) = a
+  nodeParent = Just parent
 
-  heuristic ref =
-    do s'  <- applyEffect cg ref s
-       mbH <- computeHeuristic hash cg s' goal
-       return $ do h' <- mbH
-                   return (h',s',ref)
+  heuristic nodeOp =
+    do nodeState <- applyEffect cg nodeOp (nodeState parent)
+       mbH       <- computeHeuristic hash cg nodeState goal
+       return $ do nodeMeasure <- mbH
+                   return Node { .. }
 
 -- compute the heuristic value for the state that results after applying the
 -- given effect, and hash it.
@@ -137,7 +158,7 @@ computeHeuristic hash cg s goal =
   -- Compute the size of the relaxed plan produced by the given starting state
   -- and goals.
   heuristic =
-    do x  <- buildFixpoint cg s goal
+    do _  <- buildFixpoint cg s goal
        mb <- extractPlan cg goal
        return $ do (plan,_) <- mb
                    return (length plan)
