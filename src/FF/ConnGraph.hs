@@ -101,10 +101,17 @@ applyEffect cg ref s =
 
 -- Input Processing ------------------------------------------------------------
 
+-- | Translate a domain and problem into a description of the initial state, the
+-- goal state, and the connection graph.  The translation process includes
+-- adding a special empty fact that all effects with no preconditions will have
+-- as a precondition.  The empty fact is also added to the initial state, in the
+-- event that the problem has an empty initial state.
 buildConnGraph :: I.Domain -> I.Problem -> IO (State,Goals,ConnGraph)
 buildConnGraph dom prob =
-  do facts   <- mapM mkFact allFacts
-     cgFacts <- newListArray (FactRef 0, FactRef (length facts - 1)) facts
+  do emptyFact <- mkFact (I.Fact "<empty>" [])
+     facts     <- mapM mkFact allFacts
+     cgFacts   <- newListArray (FactRef 0, FactRef (length facts))
+                      (emptyFact : facts)
 
      opers   <- mapM mkOper (I.domOperators dom)
      cgOpers <- newListArray (OperRef 0, OperRef (length opers - 1)) opers
@@ -112,7 +119,7 @@ buildConnGraph dom prob =
      effs      <- zipWithM (mkEffect cgOpers cgFacts) (map EffectRef [0 ..]) allEffs
      cgEffects <- newListArray (EffectRef 0, EffectRef (length effs - 1)) effs
 
-     return (state,goal,ConnGraph { .. })
+     return (RS.insert (FactRef 0) state,goal,ConnGraph { .. })
 
   where
   -- translated goal and initial state
@@ -121,8 +128,7 @@ buildConnGraph dom prob =
 
   -- all ground facts
   allFacts = Set.toList (I.probFacts prob `Set.union` I.domFacts dom)
-  factRefs = Map.fromList (zip allFacts (map FactRef [0 ..]))
-  factIds  = Map.elems factRefs
+  factRefs = Map.fromList (zip allFacts (map FactRef [1 ..]))
 
   -- all ground effects, extended with the preconditions from their operators
   allEffs = [ (oref, eff) | ix <- [ 0 .. ], let oref = OperRef ix
@@ -159,8 +165,9 @@ buildConnGraph dom prob =
        Oper { .. } <- readArray opers op
        writeArray opers op Oper { oEffects = RS.insert ix oEffects, .. }
 
-       -- add edges from the facts this effect's pre-conds/adds/deletes
-       let preconditions | RS.null (ePre eff) = factIds
+       -- when the preconditions for this fact are empty, make it reference
+       -- special fact 0, which represents the empty state.
+       let preconditions | RS.null (ePre eff) = [FactRef 0]
                          | otherwise          = RS.toList (ePre eff)
        mapM_ pre preconditions
        mapM_ add (RS.toList (eAdds eff))
