@@ -42,7 +42,7 @@ findPlan dom plan =
 type Steps = [EffectRef]
 
 enforcedHillClimbing :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-enforcedHillClimbing hash cg s0 goal = loop (initialNode s0)
+enforcedHillClimbing hash cg s0 goal = loop (rootNode s0)
   where
 
   loop n =
@@ -70,7 +70,7 @@ findBetterState hash cg n goal =
 -- Greedy Best-first Search ----------------------------------------------------
 
 greedyBestFirst :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-greedyBestFirst hash cg s0 goal = go HS.empty [initialNode s0]
+greedyBestFirst hash cg s0 goal = go HS.empty [rootNode s0]
   where
 
   go seen (n @ Node { .. } :rest)
@@ -101,16 +101,27 @@ data Node = Node { nodeState :: State
                    -- ^ The effect applied to arrive at this state
                  , nodeMeasure :: !Int
                    -- ^ The heuristic value of this node
+                 , nodePathMeasure :: !Int
+                   -- ^ The cost of this path
                  , nodeParent :: Maybe Node
                    -- ^ The state before this one in the plan
                  } deriving (Show)
 
-initialNode :: State -> Node
-initialNode nodeState = Node { nodeParent  = Nothing
-                             , nodeOp      = EffectRef (-1)
-                             , nodeMeasure = maxBound
-                             , ..
-                             }
+rootNode :: State -> Node
+rootNode nodeState =
+  Node { nodeParent      = Nothing
+       , nodeOp          = EffectRef (-1)
+       , nodeMeasure     = maxBound
+       , nodePathMeasure = 0
+       , ..
+       }
+
+childNode :: Node -> State -> EffectRef -> Int -> Node
+childNode parent nodeState nodeOp nodeMeasure =
+  Node { nodeParent      = Just parent
+       , nodePathMeasure = nodePathMeasure parent + nodeMeasure
+       , ..
+       }
 
 -- | Extract the set of effects applied to get to this state.  This ignores the
 -- root node, as it represents the initial state.
@@ -132,13 +143,11 @@ successors hash cg parent goal refs =
 
   where
 
-  nodeParent = Just parent
-
   heuristic nodeOp =
     do nodeState <- applyEffect cg nodeOp (nodeState parent)
        mbH       <- computeHeuristic hash cg nodeState goal
        return $ do nodeMeasure <- mbH
-                   return Node { .. }
+                   return (childNode parent nodeState nodeOp nodeMeasure)
 
 -- compute the heuristic value for the state that results after applying the
 -- given effect, and hash it.
