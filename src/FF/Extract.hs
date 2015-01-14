@@ -140,7 +140,7 @@ getActions :: ConnGraph -> State -> IO (Effects,Effects)
 getActions cg s =
   do es0 <- mconcat `fmap` mapM (enabledEffects 0) (RS.toList s)
      s'  <- foldM (flip (applyEffect cg)) s (RS.toList es0)
-     es1 <- mconcat `fmap` mapM (enabledEffects 1) (RS.toList s')
+     es1 <- mconcat `fmap` mapM (enabledEffects 1) (RS.toList (s' RS.\\ s))
      return (es0,es1)
   where
   enabledEffects level ref =
