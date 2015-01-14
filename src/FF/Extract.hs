@@ -8,7 +8,6 @@ import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
 import           Control.Monad ( foldM, filterM )
-import           Data.Array.IO ( readArray )
 import           Data.IORef ( readIORef, writeIORef )
 import qualified Data.IntMap.Strict as IM
 import           Data.Monoid ( mappend, mconcat )
@@ -25,10 +24,10 @@ type GoalSet = IM.IntMap Goals
 -- process returns immediately the value INFINITY, and doesn't complete the goal
 -- set.
 goalSet :: ConnGraph -> Goals -> IO (Maybe (Level,GoalSet))
-goalSet ConnGraph { .. } goals = go 0 IM.empty (RS.toList goals)
+goalSet cg goals = go 0 IM.empty (RS.toList goals)
   where
   go !m !gs (g:rest) =
-    do Fact { .. } <- readArray cgFacts g
+    do Fact { .. } <- getNode cg g
        i <- readIORef fLevel
 
        if i == maxBound
@@ -42,14 +41,14 @@ goalSet ConnGraph { .. } goals = go 0 IM.empty (RS.toList goals)
 -- | The difficulty heuristic for an effect: the lowest level where one of the
 -- effect's preconditions appears.
 difficulty :: ConnGraph -> EffectRef -> IO Level
-difficulty ConnGraph { .. } e =
-  do Effect { .. } <- readArray cgEffects e
+difficulty cg e =
+  do Effect { .. } <- getNode cg e
      if RS.null ePre
         then return 0
         else foldM minPrecondLevel maxBound (RS.toList ePre)
   where
   minPrecondLevel l ref =
-    do Fact { .. } <- readArray cgFacts ref
+    do Fact { .. } <- getNode cg ref
        l' <- readIORef fLevel
        return $! min l l'
 
@@ -57,7 +56,7 @@ type RelaxedPlan = [EffectRef]
 
 -- | Extract a plan from a fixed connection graph.
 extractPlan :: ConnGraph -> Goals -> IO (Maybe (RelaxedPlan,GoalSet))
-extractPlan cg @ ConnGraph { .. } goals0 =
+extractPlan cg goals0 =
   do mb <- goalSet cg goals0
      case mb of
        Just (m,gs) -> solveGoals [] m gs
@@ -78,21 +77,21 @@ extractPlan cg @ ConnGraph { .. } goals0 =
          return (Just (plan,gs))
 
   solveGoal level acc@(plan,gs) g =
-    do Fact { .. } <- readArray cgFacts g
+    do Fact { .. } <- getNode cg g
 
        -- the goal was solved by something else at this level
        isTrue <- readIORef fIsTrue
        if isTrue == level
           then return acc
-          else do e <- pickBest (level - 1) (RS.toList fAdd)
-                  Effect { .. } <- readArray cgEffects e
-                  gs' <- foldM (filterGoals level) gs (RS.toList ePre)
+          else do e             <- pickBest (level - 1) (RS.toList fAdd)
+                  Effect { .. } <- getNode cg e
+                  gs'           <- foldM (filterGoals level) gs (RS.toList ePre)
                   mapM_ (markAdd level) (RS.toList eAdds)
                   return (e:plan,gs')
 
   -- insert goals into the goal set for the level where they become true
   filterGoals level gs f =
-    do Fact { .. } <- readArray cgFacts f
+    do Fact { .. } <- getNode cg f
 
        isTrue <- readIORef fIsTrue
        l      <- readIORef fLevel
@@ -111,7 +110,7 @@ extractPlan cg @ ConnGraph { .. } goals0 =
   --  i - 2  preconditions achieved by actions ahead of this one should not be
   --         considered new goals
   markAdd i f =
-    do Fact { .. } <- readArray cgFacts f
+    do Fact { .. } <- getNode cg f
        writeIORef fIsGoal True    -- mark at i
        writeIORef fIsTrue (i - 2) -- mark at i - 2
 
@@ -123,7 +122,7 @@ extractPlan cg @ ConnGraph { .. } goals0 =
   pickBest level es = snd `fmap` foldM check (maxBound,error "pickBest") es
     where
     check acc@(d,_) r =
-      do Effect { .. } <- readArray cgEffects r
+      do Effect { .. } <- getNode cg r
          l <- readIORef eLevel
          if level /= l
             then return acc
@@ -145,11 +144,11 @@ getActions cg s =
      return (es0,es1)
   where
   enabledEffects level ref =
-    do Fact { .. } <- readArray (cgFacts cg) ref
+    do Fact { .. } <- getNode cg ref
        mconcat `fmap` mapM (checkEffect level) (RS.toList fPreCond)
 
   checkEffect level ref =
-    do Effect { .. } <- readArray (cgEffects cg) ref
+    do Effect { .. } <- getNode cg ref
        l <- readIORef eLevel
        if l == level
           then return (RS.singleton ref)
@@ -166,9 +165,9 @@ helpfulActions cg s =
                 filterM (isHelpful goals) (RS.toList es0)
   where
   isHelpful goals ref =
-    do Effect { .. } <- readArray (cgEffects cg) ref
+    do Effect { .. } <- getNode cg ref
        return (not (RS.null (RS.intersection goals eAdds)))
 
   genGoals ref =
-    do Effect { .. } <- readArray (cgEffects cg) ref
+    do Effect { .. } <- getNode cg ref
        return ePre

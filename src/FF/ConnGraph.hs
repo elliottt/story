@@ -1,15 +1,38 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE TypeFamilies #-}
 
-module FF.ConnGraph where
+module FF.ConnGraph (
+    ConnGraph()
+  , resetConnGraph
+  , buildConnGraph
+
+  , GraphNode(..)
+
+  , FactRef(),   Fact(..)
+  , OperRef(),   Oper(..)
+  , EffectRef(), Effect(..)
+
+  , Level
+
+  , State, applyEffect
+  , Goals
+  , Facts
+  , Effects
+
+    -- * Debugging
+  , printEffects, printEffect
+  , printFacts, printFact
+  ) where
 
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
 
-import           Control.Monad ( zipWithM )
+import           Control.Monad ( zipWithM, unless, (<=<) )
 import           Data.Array.IO
-import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
+import           Data.IORef
+                     ( IORef, newIORef, readIORef, writeIORef, modifyIORef )
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import qualified Data.Text as T
@@ -24,9 +47,11 @@ type Effects = RS.RefSet EffectRef
 
 type Level   = Int
 
-data ConnGraph = ConnGraph { cgFacts   :: !(IOArray FactRef Fact)
-                           , cgOpers   :: !(IOArray OperRef Oper)
-                           , cgEffects :: !(IOArray EffectRef Effect)
+data ConnGraph = ConnGraph { cgFacts        :: !(IOArray FactRef Fact)
+                           , cgOpers        :: !(IOArray OperRef Oper)
+                           , cgEffects      :: !(IOArray EffectRef Effect)
+                           , cgDirtyFacts   :: !(IORef [FactRef])
+                           , cgDirtyEffects :: !(IORef [EffectRef])
                            }
 
 
@@ -45,6 +70,8 @@ data Fact = Fact { fProp  :: !I.Fact
 
                  , fIsTrue:: !(IORef Level)
                  , fIsGoal:: !(IORef Bool)
+
+                 , fDirty :: !(IORef Bool)
 
                  , fPreCond :: !Effects
                    -- ^ Effects that require this fact
@@ -66,6 +93,8 @@ data Effect = Effect { ePre       :: !Facts
                      , eDels      :: !Facts
                      , eOp        :: !OperRef
                        -- ^ The operator that this effect came from
+
+                     , eDirty     :: !(IORef Bool)
 
                      , eInPlan    :: !(IORef Bool)
                        -- ^ Whether or not this effect is a member of the
@@ -119,6 +148,9 @@ buildConnGraph dom prob =
      effs      <- zipWithM (mkEffect cgOpers cgFacts) (map EffectRef [0 ..]) allEffs
      cgEffects <- newListArray (EffectRef 0, EffectRef (length effs - 1)) effs
 
+     cgDirtyFacts   <- newIORef []
+     cgDirtyEffects <- newIORef []
+
      return (RS.insert (FactRef 0) state,goal,ConnGraph { .. })
 
   where
@@ -138,6 +170,7 @@ buildConnGraph dom prob =
     do fLevel  <- newIORef 0
        fIsTrue <- newIORef 0
        fIsGoal <- newIORef False
+       fDirty  <- newIORef False
        return Fact { fPreCond = RS.empty
                    , fAdd     = RS.empty
                    , fDel     = RS.empty
@@ -153,6 +186,8 @@ buildConnGraph dom prob =
        eActivePre <- newIORef 0
        eInPlan    <- newIORef False
        eIsInH     <- newIORef False
+
+       eDirty     <- newIORef False
 
        let refs fs = RS.fromList (map (factRefs Map.!) fs)
            eff     =  Effect { ePre    = refs (I.ePre e)
@@ -189,24 +224,53 @@ buildConnGraph dom prob =
          writeArray facts ref Fact { fDel = RS.insert ix fDel, .. }
 
 
+-- Graph Interaction -----------------------------------------------------------
+
+class GraphNode a where
+  type Key a :: *
+  getNode :: ConnGraph -> Key a -> IO a
+
+instance GraphNode Fact where
+  type Key Fact = FactRef
+  getNode ConnGraph { .. } ref =
+    do fact @ Fact { .. } <- readArray cgFacts ref
+       isDirty            <- readIORef fDirty
+       unless isDirty $
+         do writeIORef fDirty True
+            modifyIORef cgDirtyFacts (ref :)
+       return fact
+
+instance GraphNode Oper where
+  type Key Oper = OperRef
+  getNode ConnGraph { .. } = readArray cgOpers
+
+instance GraphNode Effect where
+  type Key Effect = EffectRef
+  getNode ConnGraph { .. } ref =
+    do eff @ Effect { .. } <- readArray cgEffects ref
+       isDirty             <- readIORef eDirty
+       unless isDirty $
+         do writeIORef eDirty True
+            modifyIORef cgDirtyEffects (ref :)
+       return eff
+
+
 -- Resetting -------------------------------------------------------------------
 
--- | Reset all references in the plan graph to their initial state.
+-- | Reset dirty references in the plan graph to their initial state.
 resetConnGraph :: ConnGraph -> IO ()
-resetConnGraph ConnGraph { .. } =
-  do amapM_ resetFact   cgFacts
-     amapM_ resetOper   cgOpers
-     amapM_ resetEffect cgEffects
+resetConnGraph cg =
+  do mapM_ (resetFact   <=< getNode cg) =<< readIORef (cgDirtyFacts   cg)
+     mapM_ (resetEffect <=< getNode cg) =<< readIORef (cgDirtyEffects cg)
+     writeIORef (cgDirtyFacts   cg) []
+     writeIORef (cgDirtyEffects cg) []
 
 resetFact :: Fact -> IO ()
 resetFact Fact { .. } =
   do writeIORef fLevel maxBound
      writeIORef fIsTrue 0
      writeIORef fIsGoal False
-
-
-resetOper :: Oper -> IO ()
-resetOper Oper { .. } = return ()
+     writeIORef fDirty False
 
 resetEffect :: Effect -> IO ()
 resetEffect Effect { .. } =
@@ -214,6 +278,7 @@ resetEffect Effect { .. } =
      writeIORef eActivePre 0
      writeIORef eInPlan False
      writeIORef eIsInH False
+     writeIORef eDirty False
 
 
 -- Utilities -------------------------------------------------------------------
@@ -253,16 +318,6 @@ printEffect ref Effect { .. } =
        , " adds:     " ++ show eAdds
        , " dels:     " ++ show eDels
        ]
-
-amapM_ :: (Enum i, Ix i) => (e -> IO ()) -> IOArray i e -> IO ()
-amapM_ f arr =
-  do (lo,hi) <- getBounds arr
-
-     let go i | i > hi    =    return ()
-              | otherwise = do f =<< readArray arr i
-                               go (succ i)
-
-     go lo
 
 amapWithKeyM_ :: (Enum i, Ix i) => (i -> e -> IO ()) -> IOArray i e -> IO ()
 amapWithKeyM_ f arr =

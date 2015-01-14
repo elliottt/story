@@ -7,7 +7,6 @@ import           FF.Fixpoint
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
 
-import           Data.Array.IO ( readArray )
 import qualified Data.HashSet as HS
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
 import           Data.List ( sortBy, insertBy )
@@ -32,8 +31,8 @@ findPlan dom plan =
   mkPlan _  Nothing     = return Nothing
 
   getOper cg eref =
-    do Effect { .. } <- readArray (cgEffects cg) eref
-       Oper { .. }   <- readArray (cgOpers cg) eOp
+    do Effect { .. } <- getNode cg eref
+       Oper { .. }   <- getNode cg eOp
        return oName
 
 
@@ -97,28 +96,26 @@ greedyBestFirst hash cg s0 goal = go HS.empty [rootNode s0]
 -- | Search nodes.
 data Node = Node { nodeState :: State
                    -- ^ The state after the effect was applied
-                 , nodeOp :: EffectRef
-                   -- ^ The effect applied to arrive at this state
                  , nodeMeasure :: !Int
                    -- ^ The heuristic value of this node
                  , nodePathMeasure :: !Int
                    -- ^ The cost of this path
-                 , nodeParent :: Maybe Node
-                   -- ^ The state before this one in the plan
+                 , nodeParent :: Maybe (Node,EffectRef)
+                   -- ^ The state before this one in the plan, and the effect
+                   -- that caused the difference
                  } deriving (Show)
 
 rootNode :: State -> Node
 rootNode nodeState =
   Node { nodeParent      = Nothing
-       , nodeOp          = EffectRef (-1)
        , nodeMeasure     = maxBound
        , nodePathMeasure = 0
        , ..
        }
 
 childNode :: Node -> State -> EffectRef -> Int -> Node
-childNode parent nodeState nodeOp nodeMeasure =
-  Node { nodeParent      = Just parent
+childNode parent nodeState ref nodeMeasure =
+  Node { nodeParent      = Just (parent,ref)
        , nodePathMeasure = nodePathMeasure parent + nodeMeasure
        , ..
        }
@@ -130,8 +127,8 @@ extractPath  = go []
   where
   go plan Node { .. } =
     case nodeParent of
-      Just p  -> go (nodeOp : plan) p
-      Nothing -> plan
+      Just (p,op) -> go (op : plan) p
+      Nothing     -> plan
 
 
 -- | Apply effects to the current state, returning the valid choices ordered by

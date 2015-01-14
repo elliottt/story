@@ -8,7 +8,6 @@ module FF.Fixpoint (
 import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
-import           Data.Array.IO ( readArray )
 import           Data.IORef ( readIORef, writeIORef )
 import           Data.Monoid ( mempty, mconcat )
 
@@ -45,7 +44,7 @@ allGoalsReached cg g = go goals
   goals     = RS.toList g
 
   -- require that all goals have a level that isn't infinity.
-  go (r:rs) = do Fact { .. } <- readArray (cgFacts cg) r
+  go (r:rs) = do Fact { .. } <- getNode cg r
                  l <- readIORef fLevel
                  if l < maxBound
                     then go rs
@@ -57,8 +56,8 @@ allGoalsReached cg g = go goals
 -- | Set a fact to true at this level of the relaxed graph.  Return any effects
 -- that were enabled by adding this fact.
 activateFact :: ConnGraph -> Level -> FactRef -> IO Effects
-activateFact ConnGraph { .. } level ref =
-  do Fact { .. } <- readArray cgFacts ref
+activateFact cg level ref =
+  do Fact { .. } <- getNode cg ref
      writeIORef fLevel level
 
      mconcat `fmap` mapM addedPrecond (RS.toList fPreCond)
@@ -66,7 +65,7 @@ activateFact ConnGraph { .. } level ref =
   where
 
   addedPrecond eff =
-    do Effect { .. } <- readArray cgEffects eff
+    do Effect { .. } <- getNode cg eff
        pcs <- readIORef eActivePre
        let pcs' = pcs + 1
        writeIORef eActivePre $! pcs'
@@ -77,7 +76,7 @@ activateFact ConnGraph { .. } level ref =
 
 -- | Add an effect at level i, and return all of its add effects.
 activateEffect :: ConnGraph -> Level -> EffectRef -> IO Facts
-activateEffect ConnGraph { .. } level ref =
-  do Effect { .. } <- readArray cgEffects ref
+activateEffect cg level ref =
+  do Effect { .. } <- getNode cg ref
      writeIORef eLevel level
      return eAdds

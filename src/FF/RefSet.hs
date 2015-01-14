@@ -54,3 +54,8 @@ minView :: Ref a => RefSet a -> Maybe (a,RefSet a)
 minView (RefSet rs) =
   do (a,rs') <- IS.minView rs
      return (toRef a,RefSet rs')
+
+foldl' :: Ref a => (b -> a -> b) -> b -> RefSet a -> b
+foldl' f z (RefSet rs) = IS.foldl' f' z rs
+  where
+  f' b a = f b (toRef a)
