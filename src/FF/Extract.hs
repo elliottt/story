@@ -52,14 +52,12 @@ difficulty cg e =
        l' <- readIORef fLevel
        return $! min l l'
 
-type RelaxedPlan = [EffectRef]
-
 -- | Extract a plan from a fixed connection graph.
-extractPlan :: ConnGraph -> Goals -> IO (Maybe (RelaxedPlan,GoalSet))
+extractPlan :: ConnGraph -> Goals -> IO (Maybe (Int,GoalSet))
 extractPlan cg goals0 =
   do mb <- goalSet cg goals0
      case mb of
-       Just (m,gs) -> solveGoals [] m gs
+       Just (m,gs) -> solveGoals 0 m gs
        Nothing     -> return Nothing
   where
 
@@ -68,7 +66,7 @@ extractPlan cg goals0 =
     | level > 0 =
       do (plan',gs') <-
            case IM.lookup level gs of
-             Just goals -> foldM (solveGoal level) (plan,gs) (RS.toList goals)
+             Just goals -> foldM (solveGoal level) (0,gs) (RS.toList goals)
              Nothing    -> return (plan,gs)
 
          solveGoals plan' (level - 1) gs'
@@ -87,32 +85,36 @@ extractPlan cg goals0 =
                   Effect { .. } <- getNode cg e
                   gs'           <- foldM (filterGoals level) gs (RS.toList ePre)
                   mapM_ (markAdd level) (RS.toList eAdds)
-                  return (e:plan,gs')
+                  let plan' = 1 + plan
+                  plan' `seq` return (plan',gs')
 
   -- insert goals into the goal set for the level where they become true
   filterGoals level gs f =
     do Fact { .. } <- getNode cg f
 
        isTrue <- readIORef fIsTrue
+       isGoal <- readIORef fIsGoal
        l      <- readIORef fLevel
 
-       -- isTrue /= factLevel  some other action already achieved this fact
-       -- l /= 0               this is not an initial fact
-       if isTrue /= level && l /= 0
-          then return (IM.insertWith mappend l (RS.singleton f) gs)
-          else return gs
+       let existingGoal =
+             or [ isTrue == level
+                  -- ^ the fact was added by something else at this level
+                , isGoal
+                  -- ^ the fact is already a goal
+                , l == 0
+                  -- ^ the fact exists in the initial layer
+                ]
+
+       if existingGoal
+          then    return gs
+          else do writeIORef fIsGoal True
+                  return (IM.insertWith mappend l (RS.singleton f) gs)
 
 
-  -- mark the fact as being added at i - 2, and i
-  --
-  --  i      (isGoal) prevents achievers from being selected for facts that are
-  --         already true
-  --  i - 2  preconditions achieved by actions ahead of this one should not be
-  --         considered new goals
+  -- mark the fact as being added at level i
   markAdd i f =
     do Fact { .. } <- getNode cg f
-       writeIORef fIsGoal True    -- mark at i
-       writeIORef fIsTrue (i - 2) -- mark at i - 2
+       writeIORef fIsTrue i
 
 
   -- pick the best effect that achieved this goal in the given layer, using the

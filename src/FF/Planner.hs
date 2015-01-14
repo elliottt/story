@@ -169,8 +169,8 @@ computeHeuristic hash cg s goal =
   heuristic =
     do _  <- buildFixpoint cg s goal
        mb <- extractPlan cg goal
-       return $ do (plan,_) <- mb
-                   return (length plan)
+       return $ do (h,_) <- mb
+                   return h
 
 
 -- State Hashing ---------------------------------------------------------------
