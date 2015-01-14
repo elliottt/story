@@ -116,9 +116,12 @@ rootNode nodeState =
 childNode :: Node -> State -> EffectRef -> Int -> Node
 childNode parent nodeState ref nodeMeasure =
   Node { nodeParent      = Just (parent,ref)
-       , nodePathMeasure = nodePathMeasure parent + nodeMeasure
+       , nodePathMeasure = nodePathMeasure parent + 1
        , ..
        }
+
+aStarMeasure :: Node -> Int
+aStarMeasure Node { .. } = nodePathMeasure + nodeMeasure
 
 -- | Extract the set of effects applied to get to this state.  This ignores the
 -- root node, as it represents the initial state.
