@@ -8,8 +8,9 @@ module FF.Fixpoint (
 import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
+import           Control.Monad ( foldM )
 import           Data.IORef ( readIORef, writeIORef )
-import           Data.Monoid ( mempty, mconcat )
+import           Data.Monoid ( mconcat )
 
 
 -- Predicates ------------------------------------------------------------------
@@ -60,19 +61,24 @@ activateFact cg level ref =
   do Fact { .. } <- getNode cg ref
      writeIORef fLevel level
 
-     mconcat `fmap` mapM addedPrecond (RS.toList fPreCond)
+     foldM addedPrecond RS.empty (RS.toList fPreCond)
 
   where
 
-  addedPrecond eff =
+  addedPrecond effs eff =
     do Effect { .. } <- getNode cg eff
-       pcs <- readIORef eActivePre
-       let pcs' = pcs + 1
-       writeIORef eActivePre $! pcs'
 
-       if pcs' >= eNumPre
-          then return (RS.singleton eff)
-          else return mempty
+       -- skip effects that are already activated
+       l <- readIORef eLevel
+       if l < maxBound
+          then return effs
+          else do pcs <- readIORef eActivePre
+                  let pcs' = pcs + 1
+                  writeIORef eActivePre $! pcs'
+
+                  if pcs' >= eNumPre
+                     then return (RS.insert eff effs)
+                     else return effs
 
 -- | Add an effect at level i, and return all of its add effects.
 activateEffect :: ConnGraph -> Level -> EffectRef -> IO Facts

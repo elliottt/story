@@ -167,7 +167,7 @@ buildConnGraph dom prob =
                           | op <- I.domOperators dom, eff <- I.expandEffects op
                           ]
   mkFact fProp =
-    do fLevel  <- newIORef 0
+    do fLevel  <- newIORef maxBound
        fIsTrue <- newIORef 0
        fIsGoal <- newIORef False
        fDirty  <- newIORef False
@@ -182,7 +182,7 @@ buildConnGraph dom prob =
        return Oper { .. }
 
   mkEffect opers facts ix (op,e) =
-    do eLevel     <- newIORef 0
+    do eLevel     <- newIORef maxBound
        eActivePre <- newIORef 0
        eInPlan    <- newIORef False
        eIsInH     <- newIORef False
@@ -190,8 +190,13 @@ buildConnGraph dom prob =
        eDirty     <- newIORef False
 
        let refs fs = RS.fromList (map (factRefs Map.!) fs)
-           eff     =  Effect { ePre    = refs (I.ePre e)
-                             , eNumPre = length (I.ePre e)
+
+           -- when the preconditions for this fact are empty, make it reference
+           -- special fact 0, which represents the empty state.
+           ePre | null (I.ePre e) = RS.singleton (FactRef 0)
+                | otherwise       = refs (I.ePre e)
+
+           eff     =  Effect { eNumPre = length (I.ePre e)
                              , eAdds   = refs (I.eAdd e)
                              , eDels   = refs (I.eDel e)
                              , eOp     = op
@@ -200,11 +205,7 @@ buildConnGraph dom prob =
        Oper { .. } <- readArray opers op
        writeArray opers op Oper { oEffects = RS.insert ix oEffects, .. }
 
-       -- when the preconditions for this fact are empty, make it reference
-       -- special fact 0, which represents the empty state.
-       let preconditions | RS.null (ePre eff) = [FactRef 0]
-                         | otherwise          = RS.toList (ePre eff)
-       mapM_ pre preconditions
+       mapM_ pre (RS.toList  ePre)
        mapM_ add (RS.toList (eAdds eff))
        mapM_ del (RS.toList (eDels eff))
 
@@ -304,11 +305,14 @@ printFact ref Fact { .. } =
        ]
 
 printEffects :: ConnGraph -> IO ()
-printEffects ConnGraph { .. } = amapWithKeyM_ printEffect cgEffects
+printEffects cg = amapWithKeyM_ (printEffect cg) (cgEffects cg)
 
-printEffect :: EffectRef -> Effect -> IO ()
-printEffect ref Effect { .. } =
-  do putStrLn ("Effect (" ++ show ref ++ ")")
+printEffect :: ConnGraph -> EffectRef -> Effect -> IO ()
+printEffect cg ref Effect { .. } =
+
+  do Oper { .. } <- getNode cg eOp
+
+     putStrLn ("Effect (" ++ show ref ++ ") " ++ T.unpack oName)
 
      lev <- readIORef eLevel
 

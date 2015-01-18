@@ -66,7 +66,7 @@ extractPlan cg goals0 =
     | level > 0 =
       do (plan',gs') <-
            case IM.lookup level gs of
-             Just goals -> foldM (solveGoal level) (0,gs) (RS.toList goals)
+             Just goals -> foldM (solveGoal level) (plan,gs) (RS.toList goals)
              Nothing    -> return (plan,gs)
 
          solveGoals plan' (level - 1) gs'
