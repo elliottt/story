@@ -10,7 +10,7 @@ import qualified FF.RefSet as RS
 import           Control.Monad ( foldM, filterM )
 import           Data.IORef ( readIORef, writeIORef )
 import qualified Data.IntMap.Strict as IM
-import           Data.Monoid ( mappend, mconcat )
+import           Data.Monoid ( mappend )
 
 
 -- | A map from fact level to the goals that appear there.
@@ -136,38 +136,28 @@ extractPlan cg goals0 =
 
 -- Helpful Actions -------------------------------------------------------------
 
--- | Given a graph that has had its fixpoint calculated, extract the actions
--- of the first two layers.
-getActions :: ConnGraph -> State -> IO (Effects,Effects)
-getActions cg s =
-  do es0 <- mconcat `fmap` mapM (enabledEffects 0) (RS.toList s)
-     s'  <- foldM (flip (applyEffect cg)) s (RS.toList es0)
-     es1 <- mconcat `fmap` mapM (enabledEffects 1) (RS.toList (s' RS.\\ s))
-     return (es0,es1)
+-- | All applicable actions from the state.
+allActions :: ConnGraph -> State -> IO Effects
+allActions cg s = foldM enabledEffects RS.empty (RS.toList s)
   where
-  enabledEffects level ref =
+  enabledEffects effs ref =
     do Fact { .. } <- getNode cg ref
-       mconcat `fmap` mapM (checkEffect level) (RS.toList fPreCond)
+       foldM checkEffect effs (RS.toList fPreCond)
 
-  checkEffect level ref =
+  checkEffect effs ref =
     do Effect { .. } <- getNode cg ref
        l <- readIORef eLevel
-       if l == level
-          then return (RS.singleton ref)
-          else return RS.empty
+       if l == 0
+          then return $! RS.insert ref effs
+          else return effs
 
 -- | Helpful actions are those in the first layer of the relaxed plan, that
 -- contribute something directly to the next layer.
-helpfulActions :: ConnGraph -> (Effects,Effects) -> IO [EffectRef]
-helpfulActions cg (es0,es1)
-  | RS.null es1 = return (RS.toList es0)
-  | otherwise   = do goals <- mconcat `fmap` mapM genGoals (RS.toList es1)
-                     filterM (isHelpful goals) (RS.toList es0)
+helpfulActions :: ConnGraph -> Effects -> Goals -> IO [EffectRef]
+helpfulActions cg refs goals
+  | RS.null goals = return (RS.toList refs)
+  | otherwise     = filterM isHelpful (RS.toList refs)
   where
-  isHelpful goals ref =
+  isHelpful ref =
     do Effect { .. } <- getNode cg ref
        return (not (RS.null (RS.intersection goals eAdds)))
-
-  genGoals ref =
-    do Effect { .. } <- getNode cg ref
-       return ePre
