@@ -158,13 +158,11 @@ getActions cg s =
 
 -- | Helpful actions are those in the first layer of the relaxed plan, that
 -- contribute something directly to the next layer.
-helpfulActions :: ConnGraph -> State -> IO [EffectRef]
-helpfulActions cg s =
-  do (es0,es1) <- getActions cg s
-     if RS.null es1
-        then return (RS.toList es0)
-        else do goals     <- mconcat `fmap` mapM genGoals (RS.toList es1)
-                filterM (isHelpful goals) (RS.toList es0)
+helpfulActions :: ConnGraph -> (Effects,Effects) -> IO [EffectRef]
+helpfulActions cg (es0,es1)
+  | RS.null es1 = return (RS.toList es0)
+  | otherwise   = do goals <- mconcat `fmap` mapM genGoals (RS.toList es1)
+                     filterM (isHelpful goals) (RS.toList es0)
   where
   isHelpful goals ref =
     do Effect { .. } <- getNode cg ref

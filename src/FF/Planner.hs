@@ -7,12 +7,13 @@ import           FF.Fixpoint
 import qualified FF.Input as I
 import qualified FF.RefSet as RS
 
+import           Control.Monad ( unless )
+import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
 import           Data.List ( sortBy, insertBy )
 import           Data.Maybe ( isJust, fromMaybe, catMaybes )
 import           Data.Ord ( comparing )
-import qualified Data.Sequence as Seq
 import qualified Data.Text as T
 
 
@@ -22,10 +23,14 @@ findPlan :: I.Domain -> I.Problem -> IO (Maybe Plan)
 findPlan dom plan =
   do (s0,goal,cg) <- buildConnGraph dom plan
      hash         <- newHash
-     mb <- enforcedHillClimbing hash cg s0 goal
-     mkPlan cg =<< if isJust mb
-                      then return mb
-                      else greedyBestFirst hash cg s0 goal
+     mbRoot       <- rootNode cg s0 goal
+     case mbRoot of
+       Nothing   -> return Nothing
+       Just root ->
+         do mb <- enforcedHillClimbing hash cg root goal
+            mkPlan cg =<< if isJust mb
+                             then return mb
+                             else greedyBestFirst hash cg root goal
   where
   mkPlan cg (Just effs) = Just `fmap` mapM (getOper cg) effs
   mkPlan _  Nothing     = return Nothing
@@ -40,8 +45,10 @@ findPlan dom plan =
 
 type Steps = [EffectRef]
 
-enforcedHillClimbing :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-enforcedHillClimbing hash cg s0 goal = loop (rootNode s0)
+enforcedHillClimbing :: Hash -> ConnGraph -> Node -> Goals -> IO (Maybe Steps)
+enforcedHillClimbing hash cg root goal =
+  loop root
+
   where
 
   loop n =
@@ -58,8 +65,7 @@ enforcedHillClimbing hash cg s0 goal = loop (rootNode s0)
 -- state.
 findBetterState :: Hash -> ConnGraph -> Node -> Goals -> IO (Maybe Node)
 findBetterState hash cg n goal =
-  do _     <- buildFixpoint cg (nodeState n) goal
-     acts  <- helpfulActions cg (nodeState n)
+  do acts  <- helpfulActions cg (nodeActions n)
      succs <- successors hash cg n goal acts
      case succs of
        n' : _ | nodeMeasure n' < nodeMeasure n -> return (Just n')
@@ -68,8 +74,10 @@ findBetterState hash cg n goal =
 
 -- Greedy Best-first Search ----------------------------------------------------
 
-greedyBestFirst :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Steps)
-greedyBestFirst hash cg s0 goal = go HS.empty [rootNode s0]
+greedyBestFirst :: Hash -> ConnGraph -> Node -> Goals -> IO (Maybe Steps)
+greedyBestFirst hash cg root goal =
+  go HS.empty [root { nodeMeasure = maxBound }]
+
   where
 
   go seen (n @ Node { .. } :rest)
@@ -81,14 +89,13 @@ greedyBestFirst hash cg s0 goal = go HS.empty [rootNode s0]
          go seen rest
 
     | otherwise =
-      do _        <- buildFixpoint cg nodeState goal
-         (effs,_) <- getActions cg nodeState
+      do let (effs,_) = nodeActions
          children <- successors hash cg n goal (RS.toList effs)
          go (HS.insert nodeState seen) (foldr insertChild rest children)
 
   go _ [] = return Nothing
 
-  insertChild = insertBy (comparing nodeMeasure)
+  insertChild = insertBy (comparing aStarMeasure)
 
 
 -- Utilities -------------------------------------------------------------------
@@ -103,20 +110,32 @@ data Node = Node { nodeState :: State
                  , nodeParent :: Maybe (Node,EffectRef)
                    -- ^ The state before this one in the plan, and the effect
                    -- that caused the difference
+                 , nodeActions :: (Effects,Effects)
+                   -- ^ The actions applied in the first and second layers of
+                   -- the relaxed graph for this node.
                  } deriving (Show)
 
-rootNode :: State -> Node
-rootNode nodeState =
-  Node { nodeParent      = Nothing
-       , nodeMeasure     = maxBound
-       , nodePathMeasure = 0
-       , ..
-       }
+rootNode :: ConnGraph -> State -> Goals -> IO (Maybe Node)
+rootNode cg nodeState goal =
+  do mbH <- measureState cg nodeState goal
+     case mbH of
+       Just Heuristic { .. } ->
+            return $ Just Node { nodeParent      = Nothing
+                               , nodePathMeasure = 0
+                               , nodeMeasure     = hMeasure
+                               , nodeActions     = hActions
+                               , ..
+                               }
 
-childNode :: Node -> State -> EffectRef -> Int -> Node
-childNode parent nodeState ref nodeMeasure =
+       Nothing ->
+            return Nothing
+
+childNode :: Node -> State -> EffectRef -> Heuristic -> Node
+childNode parent nodeState ref Heuristic { .. } =
   Node { nodeParent      = Just (parent,ref)
        , nodePathMeasure = nodePathMeasure parent + 1
+       , nodeMeasure     = hMeasure
+       , nodeActions     = hActions
        , ..
        }
 
@@ -146,12 +165,26 @@ successors hash cg parent goal refs =
   heuristic nodeOp =
     do nodeState <- applyEffect cg nodeOp (nodeState parent)
        mbH       <- computeHeuristic hash cg nodeState goal
-       return $ do nodeMeasure <- mbH
-                   return (childNode parent nodeState nodeOp nodeMeasure)
+       return $ do h <- mbH
+                   return (childNode parent nodeState nodeOp h)
+
+
+data Heuristic = Heuristic { hMeasure :: !Int
+                             -- ^ The heuristic value for this state.
+                           , hActions :: (Effects,Effects)
+                             -- ^ The actions from the first and second
+                             -- layer of relaxed plan from this state
+                           } deriving (Show)
+
+-- | The Heuristic value that suggests no action.
+badHeuristic :: Heuristic
+badHeuristic  = Heuristic { hMeasure = maxBound
+                          , hActions = (RS.empty, RS.empty)
+                          }
 
 -- compute the heuristic value for the state that results after applying the
 -- given effect, and hash it.
-computeHeuristic :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Int)
+computeHeuristic :: Hash -> ConnGraph -> State -> Goals -> IO (Maybe Heuristic)
 computeHeuristic hash cg s goal =
   do mb <- lookupState hash s
      case mb of
@@ -159,50 +192,40 @@ computeHeuristic hash cg s goal =
        Just h' ->    return (Just h')
 
        -- compute and cache the heuristic
-       Nothing -> do mbH <- heuristic
-                     hashState hash s (fromMaybe maxBound mbH)
+       Nothing -> do mbH <- measureState cg s goal
+                     hashState hash s (fromMaybe badHeuristic mbH)
                      return mbH
-  where
 
-  -- Compute the size of the relaxed plan produced by the given starting state
-  -- and goals.
-  heuristic =
-    do _  <- buildFixpoint cg s goal
-       mb <- extractPlan cg goal
-       return $ do (h,_) <- mb
-                   return h
+-- | Compute the size of the relaxed plan produced by the given starting state
+-- and goals.
+measureState :: ConnGraph -> State -> Goals -> IO (Maybe Heuristic)
+measureState cg s goal =
+  do _        <- buildFixpoint cg s goal
+     mb       <- extractPlan cg goal
+     hActions <- getActions cg s
+     return $! do (hMeasure,_) <- mb
+                  return Heuristic { .. }
 
 
 -- State Hashing ---------------------------------------------------------------
 
-data Hash = Hash { shHash :: !(IORef (Seq.Seq HashedState))
+data Hash = Hash { shHash :: !(IORef (HM.HashMap State Heuristic))
                  }
-
-data HashedState = HashedState { hsState :: State
-                               , hsSum   :: !Int
-                                 -- ^ The heuristic value for this state.
-                               } deriving (Show)
 
 newHash :: IO Hash
 newHash  =
-  do shHash <- newIORef Seq.empty
+  do shHash <- newIORef HM.empty
      return Hash { .. }
 
 -- | Add a new entry in the hash for a state.
-hashState :: Hash -> State -> Int -> IO ()
-hashState h s hsSum =
+hashState :: Hash -> State -> Heuristic -> IO ()
+hashState h s val =
   do mb <- lookupState h s
-     case mb of
-       Nothing -> do states <- readIORef (shHash h)
-                     writeIORef (shHash h)
-                         (HashedState { hsState = s, .. } Seq.<| states)
-       Just {} -> return ()
+     unless (isJust mb) $
+       do states <- readIORef (shHash h)
+          writeIORef (shHash h) $! HM.insert s val states
 
-lookupState :: Hash -> State -> IO (Maybe Int)
+lookupState :: Hash -> State -> IO (Maybe Heuristic)
 lookupState Hash { .. } s =
   do states <- readIORef shHash
-     case Seq.viewl (Seq.dropWhileL notState states) of
-       HashedState { .. } Seq.:< _ -> return (Just hsSum)
-       Seq.EmptyL                  -> return Nothing
-  where
-  notState HashedState { .. } = s /= hsState
+     return $! HM.lookup s states
