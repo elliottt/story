@@ -90,12 +90,12 @@ instance Trie ArgTrie where
       AVar  _ -> ArgTrie { atVar = f atVar, .. }
       AName n -> ArgTrie { atName = alter f n atName, .. }
 
-  match key ArgTrie { .. } = name `mplus` var
+  match key ArgTrie { .. } =
+    case key of
+      AName n -> match n atName `mplus` var
+      AVar  _ -> var
     where
     var = case atVar of
             Just a  -> return a
             Nothing -> mzero
 
-    name = case key of
-             AName n -> match n atName
-             AVar  _ -> mzero
