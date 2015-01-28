@@ -7,7 +7,8 @@ import           Prelude hiding (lookup)
 
 import           FF.Compile.AST
 
-import           Data.Maybe (maybeToList, fromMaybe)
+import           Control.Monad (MonadPlus(..))
+import           Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 
 
@@ -15,7 +16,7 @@ class Trie t where
   type Key t :: *
   empty  :: t a
   alter  :: (Maybe a -> Maybe a) -> Key t -> t a -> t a
-  match  :: Key t -> t a -> [a]
+  match  :: MonadPlus m => Key t -> t a -> m a
 
 fromList :: Trie t => [(Key t, a)] -> t a
 fromList  = foldl (\ t (k,a) -> insert k a t) empty
@@ -31,7 +32,7 @@ instance Ord k => Trie (Map.Map k) where
   empty  = Map.empty
   alter  = Map.alter
 
-  match k m = maybeToList (Map.lookup k m)
+  match k m = maybe mzero return (Map.lookup k m)
 
 
 data List t a = List { lNil  :: !(Maybe a)
@@ -51,7 +52,9 @@ instance Trie t => Trie (List t) where
   match key List { .. } =
     case key of
       k:ks -> match ks =<< match k lCons
-      []   -> maybeToList lNil
+      []   -> case lNil of
+                Just a  -> return a
+                Nothing -> mzero
 
 
 -- | Turn a single alter function into one that can be used on tries of tries.
@@ -87,7 +90,12 @@ instance Trie ArgTrie where
       AVar  _ -> ArgTrie { atVar = f atVar, .. }
       AName n -> ArgTrie { atName = alter f n atName, .. }
 
-  match key ArgTrie { .. } =
-    case key of
-      AName n -> match n atName ++ maybeToList atVar
-      AVar  _ -> Map.elems atName ++ maybeToList atVar
+  match key ArgTrie { .. } = name `mplus` var
+    where
+    var = case atVar of
+            Just a  -> return a
+            Nothing -> mzero
+
+    name = case key of
+             AName n -> match n atName
+             AVar  _ -> mzero
