@@ -24,18 +24,14 @@ type Name = T.Text
 
 data Param = Param { pName :: !Name
                    , pType :: !Name
-                   } deriving (Show)
-
-data Quantify a = Quantify [Param] a
-                  deriving (Show,Functor)
+                   } deriving (Show,Eq,Ord)
 
 data Term = TAnd    [Term]
           | TOr     [Term]
-          | TPred   !Term
-          | TNot     Term
-          | TImply   Term Term
-          | TExists (Quantify Term)
-          | TForall (Quantify Term)
+          | TNot    !Term
+          | TImply  !Term !Term
+          | TExists [Param] Term
+          | TForall [Param] Term
           | TAtom   !Atom
             deriving (Show)
 

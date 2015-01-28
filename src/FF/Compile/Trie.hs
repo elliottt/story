@@ -1,5 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module FF.Compile.Trie where
 
@@ -37,7 +38,7 @@ instance Ord k => Trie (Map.Map k) where
 
 data List t a = List { lNil  :: !(Maybe a)
                      , lCons :: !(t (List t a))
-                     }
+                     } deriving (Functor)
 
 instance Trie t => Trie (List t) where
   type Key (List t) = [Key t]
@@ -63,8 +64,50 @@ update :: Trie t
 update f k m = Just $! alter f k $! fromMaybe empty m
 
 
+data TermTrie a = TermTrie { ttAnd    :: !(List TermTrie a)
+                           , ttOr     :: !(List TermTrie a)
+                           , ttNot    :: !(TermTrie a)
+                           , ttImply  :: !(TermTrie (TermTrie a))
+                           , ttForall :: !(List (Map.Map Param) (TermTrie a))
+                           , ttExists :: !(List (Map.Map Param) (TermTrie a))
+                           , ttAtom   :: !(AtomTrie a)
+                           } deriving (Functor)
+
+instance Trie TermTrie where
+  type Key TermTrie = Term
+
+  empty = TermTrie { ttAnd   = empty
+                   , ttOr    = empty
+                   , ttNot   = empty
+                   , ttImply = empty
+                   , ttForall= empty
+                   , ttExists= empty
+                   , ttAtom  = empty
+                   }
+
+  alter f key TermTrie { .. } =
+    case key of
+      TAnd ts    -> TermTrie { ttAnd   = alter f ts ttAnd,  .. }
+      TOr  ts    -> TermTrie { ttOr    = alter f ts ttOr,   .. }
+      TNot t     -> TermTrie { ttNot   = alter f t  ttNot,  .. }
+      TImply p q -> TermTrie { ttImply = alter (update f q) p ttImply, .. }
+      TForall x p-> TermTrie { ttForall= alter (update f p) x ttForall, .. }
+      TExists x p-> TermTrie { ttExists= alter (update f p) x ttExists, .. }
+      TAtom a    -> TermTrie { ttAtom  = alter f a ttAtom, .. }
+
+  match key TermTrie { .. } =
+    case key of
+      TAnd ts    -> match ts ttAnd
+      TOr  ts    -> match ts ttOr
+      TNot t     -> match t  ttNot
+      TImply p q -> match q =<< match p ttImply
+      TForall x p-> match p =<< match x ttForall
+      TExists x p-> match p =<< match x ttExists
+      TAtom a    -> match a  ttAtom
+
 
 newtype AtomTrie a = AtomTrie (Map.Map Name (List ArgTrie a))
+                     deriving (Functor)
 
 instance Trie AtomTrie where
   type Key AtomTrie = Atom
@@ -78,7 +121,7 @@ instance Trie AtomTrie where
 
 data ArgTrie a = ArgTrie { atVar  :: !(Maybe a)
                          , atName :: !(Map.Map Name a)
-                         } deriving (Show)
+                         } deriving (Show,Functor)
 
 instance Trie ArgTrie where
   type Key ArgTrie = Arg
