@@ -41,5 +41,9 @@ data Term = TAnd    [Term]
 
 type Effect = Term
 
-data Atom = Atom !Name [Name]
+data Atom = Atom !Name [Arg]
             deriving (Show)
+
+data Arg = AName !Name
+         | AVar  !Name
+           deriving (Show,Eq,Ord)
