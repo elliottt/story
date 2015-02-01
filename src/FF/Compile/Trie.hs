@@ -8,7 +8,7 @@ import           Prelude hiding (lookup)
 
 import           FF.Compile.AST
 
-import           Control.Monad (MonadPlus(..))
+import           Control.Monad (MonadPlus(..),msum)
 import           Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 
@@ -17,7 +17,9 @@ class Trie t where
   type Key t :: *
   empty  :: t a
   alter  :: (Maybe a -> Maybe a) -> Key t -> t a -> t a
+  lookup :: Key t -> t a -> Maybe a
   match  :: MonadPlus m => Key t -> t a -> m a
+  toList :: t a -> [(Key t,a)]
 
 fromList :: Trie t => [(Key t, a)] -> t a
 fromList  = foldl (\ t (k,a) -> insert k a t) empty
@@ -32,8 +34,9 @@ instance Ord k => Trie (Map.Map k) where
   type Key (Map.Map k) = k
   empty  = Map.empty
   alter  = Map.alter
-
+  lookup = Map.lookup
   match k m = maybe mzero return (Map.lookup k m)
+  toList = Map.toList
 
 
 data List t a = List { lNil  :: !(Maybe a)
@@ -50,12 +53,21 @@ instance Trie t => Trie (List t) where
       k:ks -> List { lCons = alter (update f ks) k lCons, .. }
       []   -> List { lNil  = f lNil, .. }
 
+
+  lookup key List { .. } =
+    case key of
+      k:ks -> lookup ks =<< match k lCons
+      []   -> lNil
+
   match key List { .. } =
     case key of
       k:ks -> match ks =<< match k lCons
-      []   -> case lNil of
-                Just a  -> return a
-                Nothing -> mzero
+      []   -> maybe mzero return lNil
+
+  toList List { .. } =
+    [ ([],   a) | Just a <- [lNil] ] ++
+    [ (k:ks, a) | (k,m)  <- toList lCons
+                , (ks,a) <- toList m ]
 
 
 -- | Turn a single alter function into one that can be used on tries of tries.
@@ -95,6 +107,16 @@ instance Trie TermTrie where
       TExists x p-> TermTrie { ttExists= alter (update f p) x ttExists, .. }
       TAtom a    -> TermTrie { ttAtom  = alter f a ttAtom, .. }
 
+  lookup key TermTrie { .. } =
+    case key of
+      TAnd ts    -> lookup ts ttAnd
+      TOr  ts    -> lookup ts ttOr
+      TNot t     -> lookup t  ttNot
+      TImply p q -> lookup q =<< lookup p ttImply
+      TForall x p-> lookup p =<< lookup x ttForall
+      TExists x p-> lookup p =<< lookup x ttExists
+      TAtom a    -> lookup a  ttAtom
+
   match key TermTrie { .. } =
     case key of
       TAnd ts    -> match ts ttAnd
@@ -104,6 +126,19 @@ instance Trie TermTrie where
       TForall x p-> match p =<< match x ttForall
       TExists x p-> match p =<< match x ttExists
       TAtom a    -> match a  ttAtom
+
+  toList TermTrie { .. } =
+    [ (TAnd ts,a)     | (ts,a) <- toList ttAnd ] ++
+    [ (TOr  ts,a)     | (ts,a) <- toList ttOr  ] ++
+    [ (TNot t,a)      | (t,a)  <- toList ttNot ] ++
+    [ (TImply p q,a)  | (p,m)  <- toList ttImply
+                      , (q,a)  <- toList m ] ++
+    [ (TForall x p,a) | (x,m)  <- toList ttForall
+                      , (p,a)  <- toList m ] ++
+    [ (TExists x p,a) | (x,m)  <- toList ttExists
+                      , (p,a)  <- toList m ] ++
+    [ (TAtom k,a)     | (k,a)  <- toList ttAtom ]
+
 
 
 newtype AtomTrie a = AtomTrie (Map.Map Name (List ArgTrie a))
@@ -116,29 +151,42 @@ instance Trie AtomTrie where
 
   alter f (Atom s as) (AtomTrie m) = AtomTrie (alter (update f as) s m)
 
+  lookup (Atom s as) (AtomTrie m) = lookup as =<< lookup s m
+
   match (Atom s as) (AtomTrie m) = match as =<< match s m
 
+  toList (AtomTrie m) = [ (Atom s as, a) | (s,b)  <- toList m
+                                         , (as,a) <- toList b ]
 
-data ArgTrie a = ArgTrie { atVar  :: !(Maybe a)
+
+data ArgTrie a = ArgTrie { atVar  :: !(Map.Map Name a)
                          , atName :: !(Map.Map Name a)
                          } deriving (Show,Functor)
 
 instance Trie ArgTrie where
   type Key ArgTrie = Arg
 
-  empty = ArgTrie { atVar = Nothing, atName = empty }
+  empty = ArgTrie { atVar = empty, atName = empty }
 
   alter f arg ArgTrie { .. } =
     case arg of
-      AVar  _ -> ArgTrie { atVar = f atVar, .. }
+      AVar  n -> ArgTrie { atVar  = alter f n atVar,  .. }
       AName n -> ArgTrie { atName = alter f n atName, .. }
+
+  lookup key ArgTrie { .. } =
+    case key of
+      AName n -> lookup n atName
+      AVar n  -> lookup n atVar
 
   match key ArgTrie { .. } =
     case key of
       AName n -> match n atName `mplus` var
-      AVar  _ -> var
+      AVar  _ -> allNames       `mplus` var
     where
-    var = case atVar of
-            Just a  -> return a
-            Nothing -> mzero
+    var = msum [ return x | x <- Map.elems atVar ]
 
+    allNames = msum [ return x | x <- Map.elems atName ]
+
+  toList ArgTrie { .. } =
+    [ (AVar n,a)  | (n,a) <- toList atVar  ] ++
+    [ (AName n,a) | (n,a) <- toList atName ]
