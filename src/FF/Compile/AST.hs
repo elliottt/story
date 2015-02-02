@@ -10,11 +10,13 @@ data Domain = Domain { domName      :: !T.Text
                      } deriving (Show)
 
 data Problem = Problem { probDomain :: !T.Text
+                       , probObjects:: [Object]
                        , probInit   :: [Term]
                        , probGoal   :: [Effect]
                        } deriving (Show)
 
 data Operator = Operator { opName    :: !T.Text
+                         , opDerived :: !Bool
                          , opParams  :: [Param]
                          , opPrecond :: [Term]
                          , opEffects :: [Effect]
@@ -22,16 +24,21 @@ data Operator = Operator { opName    :: !T.Text
 
 type Name = T.Text
 
-data Param = Param { pName :: !Name
-                   , pType :: !Name
-                   } deriving (Show,Eq,Ord)
+type Type = T.Text
+
+data Typed a = Typed { tValue :: a
+                     , tType  :: !Type
+                     } deriving (Show,Eq,Ord)
+
+type Param  = Typed Name
+type Object = Typed Name
 
 data Term = TAnd    [Term]
           | TOr     [Term]
           | TNot    !Term
-          | TImply  !Term !Term
-          | TExists [Param] Term
-          | TForall [Param] Term
+          | TImply  !Term   !Term
+          | TExists [Param] !Term
+          | TForall [Param] !Term
           | TAtom   !Atom
             deriving (Show)
 

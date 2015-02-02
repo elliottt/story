@@ -21,12 +21,14 @@ genProblemOperators Problem { .. } = (prob, ops)
                  }
 
   ops  = [ Operator { opName    = "$init-operator"
+                    , opDerived = True
                     , opParams  = []
                     , opPrecond = [ TAtom initAtom ]
                     , opEffects = TNot (TAtom initAtom) : probInit
                     }
 
          , Operator { opName    = "$goal-operator"
+                    , opDerived = True
                     , opParams  = []
                     , opPrecond = probGoal
                     , opEffects = [ TAtom goalAtom ]

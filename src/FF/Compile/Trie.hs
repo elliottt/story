@@ -13,7 +13,7 @@ import           Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 
 
-class Trie t where
+class Functor t => Trie t where
   type Key t :: *
   empty  :: t a
   alter  :: (Maybe a -> Maybe a) -> Key t -> t a -> t a
@@ -28,6 +28,13 @@ fromList  = foldl (\ t (k,a) -> insert k a t) empty
 insert :: Trie t => Key t -> a -> t a -> t a
 insert k a = alter (\ _ -> Just a) k
 {-# INLINE insert #-}
+
+insertWith :: Trie t => (a -> a -> a) -> Key t -> a -> t a -> t a
+insertWith merge k a' = alter upd k
+  where
+  upd (Just a) = Just (merge a a')
+  upd Nothing  = Just a'
+{-# INLINE insertWith #-}
 
 
 instance Ord k => Trie (Map.Map k) where
