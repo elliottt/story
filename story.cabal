@@ -19,7 +19,7 @@ library
                        FF.Compile,
                        FF.Compile.AST,
                        FF.Compile.Problem,
-                       FF.Compile.Quantifiers,
+                       FF.Compile.Operators,
                        FF.Compile.Trie,
                        FF.ConnGraph,
                        FF.Extract,
