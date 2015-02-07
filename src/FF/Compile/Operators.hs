@@ -1,4 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module FF.Compile.Operators (
   removeQuantifiers,
@@ -89,21 +90,42 @@ substAtom env (Atom s as) = Atom s (map subst as)
 
 -- | Generate multiple
 removeDisjunction :: Operator -> [Operator]
-removeDisjunction Operator { .. } = zipWith mkOper [1 ..] (rdTerm opPrecond)
+removeDisjunction Operator { .. } =
+  zipWith mkOper [1 ..] (rdTerm (nnfTerm opPrecond))
   where
   mkOper :: Int -> Term -> Operator
   mkOper ix pre =
-    Operator { opName    = opName `T.append` T.pack (show ix)
+    Operator { opName    = T.concat [ opName, "-", T.pack (show ix) ]
              , opPrecond = pre
              , opDerived = True
              , .. }
 
 -- | Remove disjunctions, by producing multiple terms.
 rdTerm :: Term -> [Term]
-rdTerm (TAnd ts)    = TAnd `fmap` mapM rdTerm ts
-rdTerm (TOr ts)     = msum (map rdTerm ts)
-rdTerm (TNot t)     = TNot `fmap` rdTerm t
-rdTerm (TImply p q) = msum [ rdTerm (TNot p), rdTerm q ]
-rdTerm a@TAtom{}    = return a
-rdTerm TExists{}    = error "rdTerm: TExists"
-rdTerm TForall{}    = error "rdTerm: TForall"
+rdTerm (TAnd ts)       = TAnd `fmap` mapM rdTerm ts
+rdTerm (TOr ts)        = msum (map rdTerm ts)
+rdTerm (TNot t)        = TNot `fmap` rdTerm t
+rdTerm a@TAtom{}       = return a
+rdTerm TImply{}        = error "rdTerm: TImply"
+rdTerm TExists{}       = error "rdTerm: TExists"
+rdTerm TForall{}       = error "rdTerm: TForall"
+
+-- | Put a term in negation normal form.
+nnfTerm :: Term -> Term
+
+nnfTerm (TNot (TNot t))     = nnfTerm t
+nnfTerm (TNot (TAnd ts))    = TOr  (map (nnfTerm . TNot) ts)
+nnfTerm (TNot (TOr  ts))    = TAnd (map (nnfTerm . TNot) ts)
+nnfTerm (TNot (TImply p q)) = TAnd [nnfTerm p, nnfTerm (TNot q)]
+nnfTerm t@(TNot TAtom{})    = t
+
+nnfTerm (TAnd ts)           = TAnd (map nnfTerm ts)
+nnfTerm (TOr  ts)           = TOr  (map nnfTerm ts)
+nnfTerm (TImply p q)        = TOr  [nnfTerm (TNot p), nnfTerm q]
+
+nnfTerm t@TAtom{}           = t
+
+nnfTerm (TNot TForall{})    = error "nnfTerm: TForall"
+nnfTerm (TNot TExists{})    = error "nnfTerm: TForall"
+nnfTerm TForall{}           = error "nnfTerm: TForall"
+nnfTerm TExists{}           = error "nnfTerm: TExists"
