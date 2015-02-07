@@ -11,15 +11,15 @@ data Domain = Domain { domName      :: !T.Text
 
 data Problem = Problem { probDomain :: !T.Text
                        , probObjects:: [Object]
-                       , probInit   :: [Term]
-                       , probGoal   :: [Effect]
+                       , probInit   :: [Literal]
+                       , probGoal   :: Term
                        } deriving (Show)
 
 data Operator = Operator { opName    :: !T.Text
                          , opDerived :: !Bool
                          , opParams  :: [Param]
-                         , opPrecond :: [Term]
-                         , opEffects :: [Effect]
+                         , opPrecond :: Term
+                         , opEffects :: Effect
                          } deriving (Show)
 
 type Name = T.Text
@@ -42,7 +42,23 @@ data Term = TAnd    [Term]
           | TAtom   !Atom
             deriving (Show)
 
-type Effect = Term
+mkTAnd :: [Term] -> Term
+mkTAnd [t] = t
+mkTAnd ts  = TAnd ts
+
+data Effect = EForall [Param] Effect
+            | EWhen Term [Literal]
+            | EAnd [Effect]
+            | EPrim [Literal]
+              deriving (Show)
+
+mkEWhen :: [Term] -> [Literal] -> Effect
+mkEWhen [] = EPrim
+mkEWhen ps = EWhen (mkTAnd ps)
+
+data Literal = LAtom Atom
+             | LNot  Atom
+               deriving (Show)
 
 data Atom = Atom !Name [Arg]
             deriving (Show)

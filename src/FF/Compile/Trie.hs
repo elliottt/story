@@ -9,6 +9,7 @@ import           Prelude hiding (lookup)
 import           FF.Compile.AST
 
 import           Control.Monad (MonadPlus(..),msum)
+import           Data.List (nub)
 import           Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Map
 
@@ -197,3 +198,13 @@ instance Trie ArgTrie where
   toList ArgTrie { .. } =
     [ (AVar n,a)  | (n,a) <- toList atVar  ] ++
     [ (AName n,a) | (n,a) <- toList atName ]
+
+
+-- | A map from type names to inhabitants.
+type TypeMap = Map.Map Name [Name]
+
+-- | Turn a list of operators into a mapping from type to inhabitants.
+typeMap :: [Object] -> TypeMap
+typeMap objs = nub `fmap` foldl addType empty objs
+  where
+  addType tm Typed { .. } = insertWith (++) tType [tValue] tm

@@ -15,22 +15,22 @@ genProblemOperators Problem { .. } = (prob, ops)
   initAtom = Atom "$init-problem"  []
   goalAtom = Atom "$goal-achieved" []
 
-  prob = Problem { probInit = [ TAtom initAtom ]
-                 , probGoal = [ TAtom goalAtom ]
+  prob = Problem { probInit = [LAtom initAtom]
+                 , probGoal = TAtom goalAtom
                  , ..
                  }
 
   ops  = [ Operator { opName    = "$init-operator"
                     , opDerived = True
                     , opParams  = []
-                    , opPrecond = [ TAtom initAtom ]
-                    , opEffects = TNot (TAtom initAtom) : probInit
+                    , opPrecond = TAtom initAtom
+                    , opEffects = EPrim (LNot initAtom : probInit)
                     }
 
          , Operator { opName    = "$goal-operator"
                     , opDerived = True
                     , opParams  = []
                     , opPrecond = probGoal
-                    , opEffects = [ TAtom goalAtom ]
+                    , opEffects = EPrim [LAtom goalAtom]
                     }
          ]
