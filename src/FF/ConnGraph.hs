@@ -126,7 +126,7 @@ instance RS.Ref EffectRef where
 applyEffect :: ConnGraph -> EffectRef -> State -> IO State
 applyEffect cg ref s =
   do Effect { .. } <- readArray (cgEffects cg) ref
-     return $! (s `RS.union` eAdds) RS.\\ eDels
+     return $! (s RS.\\ eDels) `RS.union` eAdds
 
 
 -- Input Processing ------------------------------------------------------------
