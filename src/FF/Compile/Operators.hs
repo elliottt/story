@@ -90,13 +90,17 @@ substAtom env (Atom s as) = Atom s (map subst as)
 
 -- | Generate multiple
 removeDisjunction :: Operator -> [Operator]
-removeDisjunction Operator { .. } =
-  zipWith mkOper [1 ..] (rdTerm (nnfTerm opPrecond))
+removeDisjunction Operator { .. } = zipWith mkOper [1 ..] rdOper
   where
-  mkOper :: Int -> Term -> Operator
-  mkOper ix pre =
-    Operator { opName    = T.concat [ opName, "-", T.pack (show ix) ]
+
+  rdOper = do pre <- rdTerm   (nnfTerm   opPrecond)
+              eff <- rdEffect (nnfEffect opEffects)
+              return (pre,eff)
+
+  mkOper ix (pre,eff) =
+    Operator { opName    = T.concat [ opName, "-", T.pack (show (ix :: Int)) ]
              , opPrecond = pre
+             , opEffects = eff
              , opDerived = True
              , .. }
 
@@ -110,6 +114,13 @@ rdTerm TImply{}        = error "rdTerm: TImply"
 rdTerm TExists{}       = error "rdTerm: TExists"
 rdTerm TForall{}       = error "rdTerm: TForall"
 
+rdEffect :: Effect -> [Effect]
+rdEffect (EWhen t q) = do p <- rdTerm t
+                          return (EWhen p q)
+rdEffect (EAnd es)   =    EAnd `fmap` map rdEffect es
+rdEffect e@EPrim{}   =    return e
+rdEffect EForall{}   = error "nnfEffect: EForall"
+
 -- | Put a term in negation normal form.
 nnfTerm :: Term -> Term
 
@@ -121,7 +132,13 @@ nnfTerm t@(TNot TAtom{})    = t
 
 nnfTerm (TAnd ts)           = TAnd (map nnfTerm ts)
 nnfTerm (TOr  ts)           = TOr  (map nnfTerm ts)
-nnfTerm (TImply p q)        = TOr  [nnfTerm (TNot p), nnfTerm q]
+
+-- instead of just translating to (-p \/ q), produce (-p \/ (p /\ q)).  This is
+-- redundant in the logical sense, but when disjunction gets removed, it
+-- produces something that's a little more true to the intent: two rules, one
+-- for -p and one for p /\ q.
+nnfTerm (TImply p q)        = TOr  [ nnfTerm (TNot p)
+                                   , TAnd [ nnfTerm p, nnfTerm q ] ]
 
 nnfTerm t@TAtom{}           = t
 
@@ -129,3 +146,9 @@ nnfTerm (TNot TForall{})    = error "nnfTerm: TForall"
 nnfTerm (TNot TExists{})    = error "nnfTerm: TForall"
 nnfTerm TForall{}           = error "nnfTerm: TForall"
 nnfTerm TExists{}           = error "nnfTerm: TExists"
+
+nnfEffect :: Effect -> Effect
+nnfEffect (EWhen p q) = EWhen (nnfTerm p) q
+nnfEffect (EAnd es)   = EAnd (map nnfEffect es)
+nnfEffect e@EPrim{}   = e
+nnfEffect EForall{}   = error "nnfEffect: EForall"
