@@ -132,13 +132,7 @@ nnfTerm t@(TNot TAtom{})    = t
 
 nnfTerm (TAnd ts)           = TAnd (map nnfTerm ts)
 nnfTerm (TOr  ts)           = TOr  (map nnfTerm ts)
-
--- instead of just translating to (-p \/ q), produce (-p \/ (p /\ q)).  This is
--- redundant in the logical sense, but when disjunction gets removed, it
--- produces something that's a little more true to the intent: two rules, one
--- for -p and one for p /\ q.
-nnfTerm (TImply p q)        = TOr  [ nnfTerm (TNot p)
-                                   , TAnd [ nnfTerm p, nnfTerm q ] ]
+nnfTerm (TImply p q)        = TOr  [ nnfTerm (TNot p), nnfTerm q ]
 
 nnfTerm t@TAtom{}           = t
 
