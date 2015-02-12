@@ -12,25 +12,25 @@ genProblemOperators :: Problem -> (Problem, [Operator])
 genProblemOperators Problem { .. } = (prob, ops)
   where
 
-  initAtom = Atom "$init-problem"  []
-  goalAtom = Atom "$goal-achieved" []
+  initAtom =        Atom "$init-problem"  []
+  goalAtom = LAtom (Atom "$goal-achieved" [])
 
   prob = Problem { probInit = [LAtom initAtom]
-                 , probGoal = TAtom goalAtom
+                 , probGoal = TLit goalAtom
                  , ..
                  }
 
   ops  = [ Operator { opName    = "$init-operator"
                     , opDerived = True
                     , opParams  = []
-                    , opPrecond = TAtom initAtom
-                    , opEffects = EPrim (LNot initAtom : probInit)
+                    , opPrecond = TLit (LAtom initAtom)
+                    , opEffects = mkELitConj (LNot initAtom : probInit)
                     }
 
          , Operator { opName    = "$goal-operator"
                     , opDerived = True
                     , opParams  = []
                     , opPrecond = probGoal
-                    , opEffects = EPrim [LAtom goalAtom]
+                    , opEffects = ELit goalAtom
                     }
          ]

@@ -39,7 +39,7 @@ data Term = TAnd    [Term]
           | TImply  !Term   !Term
           | TExists [Param] !Term
           | TForall [Param] !Term
-          | TAtom   !Atom
+          | TLit    !Literal
             deriving (Show)
 
 mkTAnd :: [Term] -> Term
@@ -49,19 +49,30 @@ mkTAnd ts  = TAnd ts
 data Effect = EForall [Param] Effect
             | EWhen Term [Literal]
             | EAnd [Effect]
-            | EPrim [Literal]
+            | ELit Literal
               deriving (Show)
 
 mkEWhen :: [Term] -> [Literal] -> Effect
-mkEWhen [] = EPrim
+mkEWhen [] = mkELitConj
 mkEWhen ps = EWhen (mkTAnd ps)
+
+mkELitConj :: [Literal] -> Effect
+mkELitConj xs = EAnd (map ELit xs)
+
+elimEAnd :: Effect -> [Effect]
+elimEAnd (EAnd es) = concatMap elimEAnd es
+elimEAnd e         = [e]
+
+isELit :: Effect -> Bool
+isELit ELit{} = True
+isELit _      = False
 
 data Literal = LAtom Atom
              | LNot  Atom
                deriving (Show)
 
 data Atom = Atom !Name [Arg]
-            deriving (Show)
+            deriving (Show,Eq,Ord)
 
 data Arg = AName !Name
          | AVar  !Name

@@ -8,11 +8,13 @@ import qualified FF.Input as I
 import qualified FF.RefSet as RS
 
 import           Control.Monad ( unless )
+import           Data.Function ( on )
 import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
+import qualified Data.Heap as Heap
 import           Data.IORef ( IORef, newIORef, readIORef, writeIORef )
 import qualified Data.IntMap.Strict as IM
-import           Data.List ( sortBy, insertBy )
+import           Data.List ( sortBy )
 import           Data.Maybe ( isJust, fromMaybe, catMaybes )
 import           Data.Ord ( comparing )
 import qualified Data.Text as T
@@ -20,9 +22,9 @@ import qualified Data.Text as T
 
 type Plan = [T.Text]
 
-findPlan :: I.Domain -> I.Problem -> IO (Maybe Plan)
-findPlan dom plan =
-  do (s0,goal,cg) <- buildConnGraph dom plan
+findPlan :: I.Problem -> I.Domain -> IO (Maybe Plan)
+findPlan prob dom =
+  do (s0,goal,cg) <- buildConnGraph dom prob
      hash         <- newHash
      mbRoot       <- rootNode cg s0 goal
      case mbRoot of
@@ -78,25 +80,27 @@ findBetterState hash cg n goal =
 
 greedyBestFirst :: Hash -> ConnGraph -> Node -> Goals -> IO (Maybe Steps)
 greedyBestFirst hash cg root goal =
-  go HS.empty [root { nodeHeuristic = (nodeHeuristic root) { hMeasure = maxBound }}]
+  go HS.empty $ Heap.singleton root
+      { nodeHeuristic = (nodeHeuristic root) { hMeasure = maxBound }}
 
   where
 
-  go seen (n @ Node { .. } :rest)
-    | nodeMeasure n == 0 =
-         return (Just (extractPath n))
+  go seen queue = case Heap.uncons queue of
 
-      -- don't generate children for nodes that have already been visited
-    | nodeState `HS.member` seen =
-         go seen rest
+    Just (n @ Node { .. }, rest)
+      | nodeMeasure n == 0 ->
+           return (Just (extractPath n))
 
-    | otherwise =
-      do children <- successors hash cg n goal (RS.toList (hActions nodeHeuristic))
-         go (HS.insert nodeState seen) (foldr insertChild rest children)
+        -- don't generate children for nodes that have already been visited
+      | nodeState `HS.member` seen ->
+           go seen rest
 
-  go _ [] = return Nothing
+      | otherwise ->
+        do children <- successors hash cg n goal (RS.toList (hActions nodeHeuristic))
+           go (HS.insert nodeState seen) (foldr Heap.insert rest children)
 
-  insertChild = insertBy (comparing aStarMeasure)
+    Nothing ->
+      return Nothing
 
 
 -- Utilities -------------------------------------------------------------------
@@ -113,6 +117,14 @@ data Node = Node { nodeState :: State
                    -- ^ The actions applied in the first and second layers of
                    -- the relaxed graph for this node.
                  } deriving (Show)
+
+instance Eq Node where
+  (==) = (==) `on` nodeState
+  {-# INLINE (==) #-}
+
+instance Ord Node where
+  compare = compare `on` aStarMeasure
+  {-# INLINE compare #-}
 
 rootNode :: ConnGraph -> State -> Goals -> IO (Maybe Node)
 rootNode cg nodeState goal =

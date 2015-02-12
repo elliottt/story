@@ -36,7 +36,8 @@ library
                        array,
                        text,
                        hashable,
-                       unordered-containers
+                       unordered-containers,
+                       heaps
   hs-source-dirs:      src
   default-language:    Haskell2010
 

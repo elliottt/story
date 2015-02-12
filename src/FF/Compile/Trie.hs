@@ -90,7 +90,7 @@ data TermTrie a = TermTrie { ttAnd    :: !(List TermTrie a)
                            , ttImply  :: !(TermTrie (TermTrie a))
                            , ttForall :: !(List (Map.Map Param) (TermTrie a))
                            , ttExists :: !(List (Map.Map Param) (TermTrie a))
-                           , ttAtom   :: !(AtomTrie a)
+                           , ttLit    :: !(LitTrie a)
                            } deriving (Functor)
 
 instance Trie TermTrie where
@@ -102,7 +102,7 @@ instance Trie TermTrie where
                    , ttImply = empty
                    , ttForall= empty
                    , ttExists= empty
-                   , ttAtom  = empty
+                   , ttLit   = empty
                    }
 
   alter f key TermTrie { .. } =
@@ -113,7 +113,7 @@ instance Trie TermTrie where
       TImply p q -> TermTrie { ttImply = alter (update f q) p ttImply, .. }
       TForall x p-> TermTrie { ttForall= alter (update f p) x ttForall, .. }
       TExists x p-> TermTrie { ttExists= alter (update f p) x ttExists, .. }
-      TAtom a    -> TermTrie { ttAtom  = alter f a ttAtom, .. }
+      TLit l     -> TermTrie { ttLit   = alter f l ttLit, .. }
 
   lookup key TermTrie { .. } =
     case key of
@@ -123,7 +123,7 @@ instance Trie TermTrie where
       TImply p q -> lookup q =<< lookup p ttImply
       TForall x p-> lookup p =<< lookup x ttForall
       TExists x p-> lookup p =<< lookup x ttExists
-      TAtom a    -> lookup a  ttAtom
+      TLit l     -> lookup l  ttLit
 
   match key TermTrie { .. } =
     case key of
@@ -133,7 +133,7 @@ instance Trie TermTrie where
       TImply p q -> match q =<< match p ttImply
       TForall x p-> match p =<< match x ttForall
       TExists x p-> match p =<< match x ttExists
-      TAtom a    -> match a  ttAtom
+      TLit l     -> match l  ttLit
 
   toList TermTrie { .. } =
     [ (TAnd ts,a)     | (ts,a) <- toList ttAnd ] ++
@@ -145,7 +145,31 @@ instance Trie TermTrie where
                       , (p,a)  <- toList m ] ++
     [ (TExists x p,a) | (x,m)  <- toList ttExists
                       , (p,a)  <- toList m ] ++
-    [ (TAtom k,a)     | (k,a)  <- toList ttAtom ]
+    [ (TLit k,a)      | (k,a)  <- toList ttLit ]
+
+
+
+data LitTrie a = LitTrie { lAtom :: AtomTrie a
+                         , lNot  :: AtomTrie a
+                         } deriving (Functor)
+
+instance Trie LitTrie where
+  type Key LitTrie = Literal
+
+  empty = LitTrie empty empty
+
+  alter f (LAtom a) LitTrie { .. } = LitTrie { lAtom = alter f a lAtom, .. }
+  alter f (LNot  a) LitTrie { .. } = LitTrie { lAtom = alter f a lNot,  .. }
+
+  lookup (LAtom a) LitTrie { .. } = lookup a lAtom
+  lookup (LNot  a) LitTrie { .. } = lookup a lNot
+
+  match (LAtom a) LitTrie { .. } = match a lAtom
+  match (LNot  a) LitTrie { .. } = match a lNot
+
+  toList LitTrie { .. } =
+    [ (LAtom k,a) | (k,a) <- toList lAtom ] ++
+    [ (LNot  k,a) | (k,a) <- toList lNot  ]
 
 
 
