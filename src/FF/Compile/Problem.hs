@@ -8,29 +8,19 @@ import FF.Compile.AST
 
 -- | Generate operators from the problem description.  This corresponds to the
 -- "Initial Conditions and Goals" section.
-genProblemOperators :: Problem -> (Problem, [Operator])
-genProblemOperators Problem { .. } = (prob, ops)
+genProblemOperators :: Problem -> (Problem, Operator)
+genProblemOperators Problem { .. } = (prob, goalOp)
   where
 
-  initAtom =        Atom "$init-problem"  []
   goalAtom = LAtom (Atom "$goal-achieved" [])
 
-  prob = Problem { probInit = [LAtom initAtom]
-                 , probGoal = TLit goalAtom
+  prob = Problem { probGoal = TLit goalAtom
                  , ..
                  }
 
-  ops  = [ Operator { opName    = "$init-operator"
-                    , opDerived = True
-                    , opParams  = []
-                    , opPrecond = TLit (LAtom initAtom)
-                    , opEffects = mkELitConj (LNot initAtom : probInit)
-                    }
-
-         , Operator { opName    = "$goal-operator"
+  goalOp = Operator { opName    = "$goal-operator"
                     , opDerived = True
                     , opParams  = []
                     , opPrecond = probGoal
                     , opEffects = ELit goalAtom
                     }
-         ]

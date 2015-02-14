@@ -5,26 +5,25 @@ module FF.Compile (
   ) where
 
 import           FF.Compile.AST
-import           FF.Compile.Problem
 import           FF.Compile.Operators
-import qualified FF.Compile.Trie as Trie
+import           FF.Compile.Problem
 import qualified FF.Input as I
 
-import           Data.Foldable (foldMap)
 import qualified Data.Text as T
 
 
 compile :: Problem -> Domain -> (I.Problem,I.Domain)
-compile prob dom = ( transProblem prob'
+compile prob dom = ( transProblem prob''
                    , transDomain dom { domOperators = ops' } )
   where
-  types = Trie.typeMap (probObjects prob)
+  types = typeMap (probObjects prob)
 
-  (prob',initAndGoal) = genProblemOperators prob
+  (prob',goalOp) = genProblemOperators prob
 
-  ops' = removeNegation $
-    do op <- map (removeQuantifiers types) (initAndGoal ++ domOperators dom)
-       removeDisjunction op
+  (prob'',ops') = removeNegation prob' $
+    do op        <- goalOp : domOperators dom
+       (env,op') <- expandActions types op
+       removeDisjunction (removeQuantifiers types env op')
 
 
 transProblem :: Problem -> I.Problem
@@ -58,13 +57,13 @@ transEff eff = simple ++ conditional
          | otherwise = [ foldl addEffect emptyEffect lits ]
 
   conditional =
-    [ foldl addEffect eff q | (p,q) <- conds
-                            , let eff = emptyEffect { I.ePre = transPre p } ]
+    [ foldl addEffect eff' q | (p,q) <- conds
+                             , let eff' = emptyEffect { I.ePre = transPre p } ]
 
   emptyEffect = I.Effect { I.ePre = [], I.eAdd = [], I.eDel = [] }
 
-  addEffect eff (LAtom a) = eff { I.eAdd = transAtom a : I.eAdd eff }
-  addEffect eff (LNot  a) = eff { I.eDel = transAtom a : I.eDel eff }
+  addEffect e (LAtom a) = e { I.eAdd = transAtom a : I.eAdd e }
+  addEffect e (LNot  a) = e { I.eDel = transAtom a : I.eDel e }
 
 -- | Partition an effect into its simple, and conditional effects.
 splitEffs :: Effect -> ([Literal],[(Term,[Literal])])

@@ -1,7 +1,11 @@
+{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveFunctor #-}
 
 module FF.Compile.AST where
 
+import           Data.Foldable (foldMap)
+import qualified Data.Map.Strict as Map
+import           Data.Monoid (Monoid(..))
 import qualified Data.Text as T
 
 
@@ -29,6 +33,24 @@ type Type = T.Text
 data Typed a = Typed { tValue :: a
                      , tType  :: !Type
                      } deriving (Show,Eq,Ord)
+
+-- | Types and all their inhabitants.
+newtype TypeMap a = TypeMap { getTypeMap :: Map.Map Type [a]
+                            } deriving (Show)
+
+instance Monoid (TypeMap a) where
+  mempty =
+    TypeMap mempty
+
+  mappend (TypeMap a) (TypeMap b) =
+    TypeMap (Map.unionWith (++) a b)
+
+typeMap :: [Typed a] -> TypeMap a
+typeMap  = foldMap (\ Typed { .. } -> TypeMap (Map.singleton tType [tValue]) )
+
+lookupType :: Type -> TypeMap a -> [a]
+lookupType k (TypeMap m) = Map.findWithDefault [] k m
+
 
 type Param  = Typed Name
 type Object = Typed Name
@@ -58,6 +80,10 @@ mkEWhen ps = EWhen (mkTAnd ps)
 
 mkELitConj :: [Literal] -> Effect
 mkELitConj xs = EAnd (map ELit xs)
+
+mkEAnd :: [Effect] -> Effect
+mkEAnd [e] = e
+mkEAnd es  = EAnd es
 
 elimEAnd :: Effect -> [Effect]
 elimEAnd (EAnd es) = concatMap elimEAnd es

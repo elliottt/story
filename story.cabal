@@ -20,7 +20,6 @@ library
                        FF.Compile.AST,
                        FF.Compile.Problem,
                        FF.Compile.Operators,
-                       FF.Compile.Trie,
                        FF.ConnGraph,
                        FF.Extract,
                        FF.Fixpoint,
