@@ -23,10 +23,8 @@ import qualified Data.Text as T
 
 type Plan = [T.Text]
 
-data Method = EnforcedHillClimbing | GreedyBFS
-              deriving (Show)
-
-data Result = Result Method Plan
+data Result = EnforcedHillClimbing Plan
+            | GreedyBFS Plan
               deriving (Show)
 
 findPlan :: I.Problem -> I.Domain -> IO (Maybe Result)
@@ -44,7 +42,7 @@ findPlan prob dom =
                                      return (GreedyBFS,res)
   where
 
-  mkPlan cg (m,Just effs) = (Just . Result m) `fmap` mapM (getOper cg) effs
+  mkPlan cg (m,Just effs) = (Just . m) `fmap` mapM (getOper cg) effs
   mkPlan _  (_,Nothing)   = return Nothing
 
   getOper cg eref =
