@@ -38,6 +38,9 @@ singleton a = RefSet (IS.singleton (fromRef a))
 insert :: Ref a => a -> RefSet a -> RefSet a
 insert a (RefSet rs) = RefSet (IS.insert (fromRef a) rs)
 
+member :: Ref a => a -> RefSet a -> Bool
+member a (RefSet rs) = IS.member (fromRef a) rs
+
 intersection :: RefSet a -> RefSet a -> RefSet a
 intersection (RefSet a) (RefSet b) = RefSet (IS.intersection a b)
 

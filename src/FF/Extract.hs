@@ -7,9 +7,10 @@ module FF.Extract where
 import           FF.ConnGraph
 import qualified FF.RefSet as RS
 
-import           Control.Monad ( foldM, filterM )
+import           Control.Monad ( foldM, filterM, guard )
 import           Data.IORef ( readIORef, writeIORef )
 import qualified Data.IntMap.Strict as IM
+import           Data.Maybe ( isNothing )
 import           Data.Monoid ( mappend )
 
 
@@ -161,3 +162,34 @@ helpfulActions cg refs goals
   isHelpful ref =
     do Effect { .. } <- getNode cg ref
        return (not (RS.null (RS.intersection goals eAdds)))
+
+
+-- Added Goal Deletion ---------------------------------------------------------
+
+-- | True when the plan currently represented in the graph deletes a goal along
+-- the way.
+addedGoalDeletion :: ConnGraph -> Goals -> IO Bool
+addedGoalDeletion cg goals = go RS.empty (RS.toList goals)
+  where
+  go seen (ref : gs) =
+    do Fact { .. } <- getNode cg ref
+       (seen',mb)  <- foldM checkDels (seen,Just RS.empty) (RS.toList fAdd)
+       case mb of
+         Just gs' -> go seen' (RS.toList gs' ++ gs)
+         Nothing  -> return True
+
+  go _ [] = return False
+
+  checkDels acc@(seen,next) ref
+
+    | isNothing next || ref `RS.member` seen =
+         return acc
+
+    | otherwise =
+      do Effect { .. } <- getNode cg ref
+
+         let acc' = do guard (RS.null (goals `RS.intersection` eDels))
+                       facts <- next
+                       return (ePre `RS.union` facts)
+
+         return (RS.insert ref seen, acc')
