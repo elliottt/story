@@ -36,14 +36,14 @@ findPlan prob dom =
        Nothing   -> return Nothing
        Just root ->
          do mb <- enforcedHillClimbing hash cg root goal
-            mkPlan cg =<< if isJust mb
-                             then return (EnforcedHillClimbing,mb)
-                             else do res <- greedyBestFirst hash cg root goal
-                                     return (GreedyBFS,res)
+            if isJust mb
+               then mkPlan cg EnforcedHillClimbing mb
+               else do res <- greedyBestFirst hash cg root goal
+                       mkPlan cg GreedyBFS res
   where
 
-  mkPlan cg (m,Just effs) = (Just . m) `fmap` mapM (getOper cg) effs
-  mkPlan _  (_,Nothing)   = return Nothing
+  mkPlan cg m (Just effs) = (Just . m) `fmap` mapM (getOper cg) effs
+  mkPlan _  _ Nothing     = return Nothing
 
   getOper cg eref =
     do Effect { .. } <- getNode cg eref
