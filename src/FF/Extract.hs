@@ -84,6 +84,7 @@ extractPlan cg goals0 =
           then return acc
           else do e             <- pickBest (level - 1) (RS.toList fAdd)
                   Effect { .. } <- getNode cg e
+                  writeIORef eInPlan True
                   gs'           <- foldM (filterGoals level) gs (RS.toList ePre)
                   mapM_ (markAdd level) (RS.toList eAdds)
                   let plan' = 1 + plan
@@ -161,7 +162,8 @@ helpfulActions cg refs goals
   where
   isHelpful ref =
     do Effect { .. } <- getNode cg ref
-       return (not (RS.null (RS.intersection goals eAdds)))
+       inPlan        <- readIORef eInPlan
+       return (inPlan && not (RS.null (RS.intersection goals eAdds)))
 
 
 -- Added Goal Deletion ---------------------------------------------------------
@@ -188,8 +190,18 @@ addedGoalDeletion cg goals = go RS.empty (RS.toList goals)
     | otherwise =
       do Effect { .. } <- getNode cg ref
 
-         let acc' = do guard (RS.null (goals `RS.intersection` eDels))
-                       facts <- next
-                       return (ePre `RS.union` facts)
+         inPlan <- readIORef eInPlan
 
-         return (RS.insert ref seen, acc')
+         let next'
+               | inPlan =
+                 do guard (RS.null (goals `RS.intersection` eDels))
+                    facts <- next
+                    return (ePre `RS.union` facts)
+
+               | otherwise =
+                    next
+
+             seen' = RS.insert ref seen
+
+
+         next' `seq` return (RS.insert ref seen, next')

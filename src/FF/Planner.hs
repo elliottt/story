@@ -72,7 +72,7 @@ findBetterState hash cg n goal =
   do let Heuristic { .. } = nodeHeuristic n
      acts  <- helpfulActions cg hActions hGoals
      succs <- successors True hash cg n goal acts
-     case succs of
+     case filter (not . deletesGoal) succs of
        n' : _ | nodeMeasure n' < nodeMeasure n -> return (Just n')
        _                                       -> return Nothing
 
@@ -149,6 +149,9 @@ childNode parent nodeState ref nodeHeuristic =
        , nodePathMeasure = nodePathMeasure parent + 1
        , ..
        }
+
+deletesGoal :: Node -> Bool
+deletesGoal Node { nodeHeuristic = Heuristic { .. } } = hDeletesGoal
 
 aStarMeasure :: Node -> Int
 aStarMeasure n = nodePathMeasure n + nodeMeasure n
