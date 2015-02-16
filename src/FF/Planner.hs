@@ -123,6 +123,9 @@ instance Eq Node where
   (==) = (==) `on` nodeState
   {-# INLINE (==) #-}
 
+-- NOTE: changing the implementation of compare for Node will result in
+-- different search strategies.  For example, changing it from 'aStarMeasure' to
+-- just 'nodeMeasure' will switch from A* to greedy-best-first search.
 instance Ord Node where
   compare = compare `on` aStarMeasure
   {-# INLINE compare #-}
