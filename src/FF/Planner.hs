@@ -23,7 +23,13 @@ import qualified Data.Text as T
 
 type Plan = [T.Text]
 
-findPlan :: I.Problem -> I.Domain -> IO (Maybe Plan)
+data Method = EnforcedHillClimbing | GreedyBFS
+              deriving (Show)
+
+data Result = Result Method Plan
+              deriving (Show)
+
+findPlan :: I.Problem -> I.Domain -> IO (Maybe Result)
 findPlan prob dom =
   do (s0,goal,cg) <- buildConnGraph dom prob
      hash         <- newHash
@@ -33,11 +39,13 @@ findPlan prob dom =
        Just root ->
          do mb <- enforcedHillClimbing hash cg root goal
             mkPlan cg =<< if isJust mb
-                             then return mb
-                             else greedyBestFirst hash cg root goal
+                             then return (EnforcedHillClimbing,mb)
+                             else do res <- greedyBestFirst hash cg root goal
+                                     return (GreedyBFS,res)
   where
-  mkPlan cg (Just effs) = Just `fmap` mapM (getOper cg) effs
-  mkPlan _  Nothing     = return Nothing
+
+  mkPlan cg (m,Just effs) = (Just . Result m) `fmap` mapM (getOper cg) effs
+  mkPlan _  (_,Nothing)   = return Nothing
 
   getOper cg eref =
     do Effect { .. } <- getNode cg eref
