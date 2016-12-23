@@ -6,11 +6,11 @@ module FF.Fixpoint (
   ) where
 
 import           FF.ConnGraph
-import qualified FF.RefSet as RS
 
-import           Control.Monad ( foldM )
+import           Data.Foldable (foldlM)
 import           Data.IORef ( readIORef, writeIORef )
 import           Data.Monoid ( mconcat )
+import qualified Data.Set as Set
 
 
 -- Predicates ------------------------------------------------------------------
@@ -20,69 +20,66 @@ import           Data.Monoid ( mconcat )
 -- facts, and delete effects are ignored, this operation will terminate.  The
 -- set of effects returned is the set of effects that are immediately applicable
 -- to the initial state.
-buildFixpoint :: ConnGraph -> State -> Goals -> IO Int
+buildFixpoint :: ConnGraph a -> State a -> Goals a -> IO Int
 buildFixpoint gr s0 g =
   do resetConnGraph gr
      loop 0 s0
   where
   loop level facts =
-    do effs <- mconcat `fmap` mapM (activateFact gr level) (RS.toList facts)
-       done <- allGoalsReached gr g
+    do effs <- mconcat `fmap` traverse (activateFact level) (Set.toList facts)
+       done <- allGoalsReached g
        if done
           then return level
-          else do facts' <- mconcat `fmap` mapM (activateEffect gr level)
-                                                (RS.toList effs)
-                  if RS.null facts'
+          else do facts' <- mconcat `fmap` mapM (activateEffect level)
+                                                (Set.toList effs)
+                  if Set.null facts'
                      then return level
                      else loop (level + 1) facts'
 
 
 -- | All goals have been reached if they are all activated in the connection
 -- graph.
-allGoalsReached :: ConnGraph -> Goals -> IO Bool
-allGoalsReached cg g = go goals
+allGoalsReached :: Goals a -> IO Bool
+allGoalsReached g = go goals
   where
-  goals     = RS.toList g
+  goals = Set.toList g
 
   -- require that all goals have a level that isn't infinity.
-  go (r:rs) = do Fact { .. } <- getNode cg r
-                 l <- readIORef fLevel
-                 if l < maxBound
-                    then go rs
-                    else return False
+  go (fact:rs) =
+    do mb <- getLevel fact
+       case mb of
+         Just{}  -> go rs
+         Nothing -> return False
 
-  go []     =    return True
+  go [] = return True
 
 
 -- | Set a fact to true at this level of the relaxed graph.  Return any effects
 -- that were enabled by adding this fact.
-activateFact :: ConnGraph -> Level -> FactRef -> IO Effects
-activateFact cg level ref =
-  do Fact { .. } <- getNode cg ref
-     writeIORef fLevel level
-
-     foldM addedPrecond RS.empty (RS.toList fPreCond)
+activateFact :: Level -> Fact a -> IO (Effects a)
+activateFact level fact =
+  do activate fact level
+     foldlM addedPrecond Set.empty (requiresFact fact)
 
   where
 
   addedPrecond effs eff =
-    do Effect { .. } <- getNode cg eff
+    do -- skip effects that are already activated
+       mb <- getLevel eff
+       case mb of
 
-       -- skip effects that are already activated
-       l <- readIORef eLevel
-       if l < maxBound
-          then return effs
-          else do pcs <- readIORef eActivePre
-                  let pcs' = pcs + 1
-                  writeIORef eActivePre $! pcs'
+         Just{}  ->
+             return effs
 
-                  if pcs' >= eNumPre
-                     then return (RS.insert eff effs)
-                     else return effs
+         Nothing ->
+           do activated <- activatePrecondition eff
+              if activated
+                 then return (Set.insert eff effs)
+                 else return effs
+
 
 -- | Add an effect at level i, and return all of its add effects.
-activateEffect :: ConnGraph -> Level -> EffectRef -> IO Facts
-activateEffect cg level ref =
-  do Effect { .. } <- getNode cg ref
-     writeIORef eLevel level
-     return eAdds
+activateEffect :: Level -> Effect a -> IO (Facts a)
+activateEffect level e =
+  do activate e level
+     return (effectAdds e)
