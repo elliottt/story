@@ -9,11 +9,8 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     FF.ConnGraph,
-                       FF.Extract,
-                       FF.Fixpoint,
-                       FF.Input,
-                       FF.Planner
+  exposed-modules:     Types
+                       Fixpoint
   build-depends:       base >=4.6 && <5,
                        containers >=0.5,
                        monadLib >=3.7,
