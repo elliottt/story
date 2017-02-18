@@ -7,6 +7,12 @@ import qualified Data.IntMap as IntMap
 import qualified Data.Foldable as F
 
 
+-- | Construct the relaxed planning graph, for satisfying the given fact from
+-- the initial state.
+rpg :: Graph -> Actors -> FactId -> State -> IO Actions
+rpg graph actors i s =
+  do mapM_ (activateFact graph 0) s
+
 -- | Compute relevant actions from this set of actors, target intent fact, and
 -- initial world state. This corresponds to @f@ in the original paper.
 relevant :: Graph -> Actors -> FactId -> State -> IO Actions
@@ -23,11 +29,18 @@ reachable graph actors i state =
 -- | If no actions are relevant, use the reachable actions to discover relevant
 -- commands. This function corresponds to @F-COMMANDS@ in the original paper.
 commands :: Graph -> Actors -> FactId -> State -> IO Actions
-commands graph actors i state =
-  do relevant <- relevant graph actors i state
-     if IntSet.null relevant
-        then error "commands: discover relevant commands"
-        else return relevant
+commands graph actors i state = loop actors
+  where
+  loop b =
+    do r <- relevant graph b i state
+       if IntSet.null r
+          then do u <- reachable graph b i state
+                  agents <- findAgents u
+                  undefined
+          else return r
+
+  findAgents as =
+    do undefined
 
 -- | The cooperating action set for a group of actors all attempting to make the
 -- given fact true. This function corresponds to @RELEVANTACTIONS-BASIC@ in the

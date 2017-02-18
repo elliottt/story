@@ -2,7 +2,9 @@
 
 module Types where
 
+import           Control.Monad (filterM)
 import           Data.Array (Array,(!))
+import           Data.IORef (IORef,newIORef,readIORef,writeIORef,modifyIORef')
 import qualified Data.Text as T
 import qualified Data.IntMap as IntMap
 import qualified Data.IntSet as IntSet
@@ -60,15 +62,46 @@ addIntent b i = IntMap.insertWith IntSet.union (fId i) b
 
 -- Relaxed Planning Graph ------------------------------------------------------
 
+type Level = Int
+
 data Graph = Graph { gFacts   :: !(Array FactId   FactHeader)
                    , gActions :: !(Array ActionId ActionHeader)
                    }
 
 data FactHeader = FactHeader { fhFact :: !Fact
+                             , fhLevel :: !(IORef Level)
+                               -- ^ The level this fact was activated at
                              }
 
 data ActionHeader = ActionHeader { ahAction :: !Action
+                                 , ahPreConds :: !(IORef Int)
+                                   -- ^ The number of preconditions remaining
                                  }
+
+-- | Active this fact in the graph, at the given level. Returns a set of actions
+-- that were enabled in the graph when this fact became true.
+activateFact :: Graph -> FactId -> Level -> IO Actions
+activateFact graph @ Graph { .. } = \ i l ->
+  do let FactHeader { fhFact = Fact { .. }, .. } = gFacts ! i
+     writeIORef fhLevel l
+
+     active <- filterM (satisfyPrecond graph) (IntSet.toList fPreCond)
+
+     return (IntSet.fromList active)
+{-# INLINE activateFact #-}
+
+-- | Mark an action has having one of its preconditions satisfied. Returns True
+-- when all of its preconditions are satisfied.
+satisfyPrecond :: Graph -> ActionId -> IO Bool
+satisfyPrecond Graph { .. } = \ e -> 
+  do let ActionHeader { ahAction = Action { .. }, .. } = gActions ! e
+
+     active <- readIORef ahPreConds
+     let active' = active - 1
+     writeIORef ahPreConds active'
+
+     return $! active' == 0
+{-# INLINE satisfyPrecond #-}
 
 actionApplies :: Graph -> State -> ActionId -> Bool
 actionApplies Graph { .. } state = \ a ->
