@@ -1,2 +1,5 @@
-:set -XOverloadedStrings -Wall
+:set -Wall
 :cd src
+
+import qualified Data.Text as T
+import           Text.Show.Pretty

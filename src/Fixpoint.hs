@@ -11,7 +11,7 @@ import qualified Data.Foldable as F
 -- the initial state.
 rpg :: Graph -> Actors -> FactId -> State -> IO Actions
 rpg graph actors i s =
-  do mapM_ (activateFact graph 0) s
+  error "rpg"
 
 -- | Compute relevant actions from this set of actors, target intent fact, and
 -- initial world state. This corresponds to @f@ in the original paper.
