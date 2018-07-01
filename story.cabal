@@ -12,6 +12,7 @@ library
   exposed-modules:     Types
                        Fixpoint
                        Input
+                       Input.Ground
                        Input.Parser
                        Input.Types
   build-depends:       base >=4.6 && <5,

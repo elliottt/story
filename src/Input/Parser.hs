@@ -165,56 +165,56 @@ parseParam WFSList{} =
      fail "Expected an atom for a parameter name"
 
 
-parsePrecondition :: [WellFormedSExpr Atom] -> P (Term, [WellFormedSExpr Atom])
+parsePrecondition :: [WellFormedSExpr Atom] -> P (Pre, [WellFormedSExpr Atom])
 
 parsePrecondition (":precondition":body:rest) =
-  do tm <- parseTerm body
+  do tm <- parsePre body
      return (tm,rest)
 
 -- no precondition
 parsePrecondition rest =
-     return (tAnd [], rest)
+     return (pAnd [], rest)
 
 
 -- | Parse a term.
-parseTerm :: WellFormedSExpr Atom -> P Term
+parsePre :: WellFormedSExpr Atom -> P Pre
 
-parseTerm (WFSList ("and":body)) =
-  do es <- mapM parseTerm body
-     return (tAnd es)
+parsePre (WFSList ("and":body)) =
+  do es <- mapM parsePre body
+     return (pAnd es)
 
-parseTerm (WFSList ("or":body)) =
-  do es <- mapM parseTerm body
-     return (tOr es)
+parsePre (WFSList ("or":body)) =
+  do es <- mapM parsePre body
+     return (pOr es)
 
-parseTerm (WFSList ["not",body]) =
-  do e <- parseTerm body
-     return (TNot e)
+parsePre (WFSList ["not",body]) =
+  do e <- parsePre body
+     return (PNot e)
 
-parseTerm (WFSList ["exists",WFSList args,body]) =
+parsePre (WFSList ["exists",WFSList args,body]) =
   do (ps,untyped) <- parseTyped parseParam args
      unless (null untyped)
             (fail ("Some arguments missing types on exists: " ++ show untyped))
-     e  <- parseTerm body
-     return (TExists ps e)
+     e  <- parsePre body
+     return (PExists ps e)
 
-parseTerm (WFSList ["forall",WFSList args,body]) =
+parsePre (WFSList ["forall",WFSList args,body]) =
   do (ps,untyped) <- parseTyped parseParam args
      unless (null untyped)
             (fail ("Some arguments missing types on forall: " ++ show untyped))
-     e  <- parseTerm body
-     return (TForall ps e)
+     e  <- parsePre body
+     return (PForall ps e)
 
-parseTerm (WFSList ["=>",a,b]) =
-  do a' <- parseTerm a
-     b' <- parseTerm b
-     return (TImp a' b')
+parsePre (WFSList ["=>",a,b]) =
+  do a' <- parsePre a
+     b' <- parsePre b
+     return (PImp a' b')
 
-parseTerm (WFSList body) =
+parsePre (WFSList body) =
   do lit <- parseLiteral body
-     return (TLit lit)
+     return (PLit lit)
 
-parseTerm _ =
+parsePre _ =
      fail "Invalid term, expected a list"
 
 
@@ -241,7 +241,7 @@ parseEffect (WFSList ("and":body)) =
      return (EAnd es)
 
 parseEffect (WFSList ["when",t,e]) =
-  do t' <- parseTerm t
+  do t' <- parsePre t
      e' <- parseEffect e
      return (EWhen t' e')
 
@@ -251,6 +251,10 @@ parseEffect (WFSList ["forall",WFSList args,body]) =
             (fail ("Some arguments missing types on effect forall: " ++ show untyped))
      e            <- parseEffect body
      return (EForall ps e)
+
+parseEffect (WFSList ["not",WFSList es]) =
+  do lit <- parseLiteral es
+     return (ENot lit)
 
 parseEffect (WFSList es) =
   do lit <- parseLiteral es
@@ -262,17 +266,9 @@ parseEffect _ =
 
 parseLiteral :: [WellFormedSExpr Atom] -> P Literal
 
-parseLiteral ("not":body) =
-  case body of
-    [WFSList es] ->
-      do Pred b p es' <- parseLiteral es
-         return (Pred (not b) p es')
-
-    _ -> fail "Invalid literal negation"
-
 parseLiteral es
   | Just (p:es') <- mapM isAtom es =
-    return (Pred False p es')
+    return (Pred p es')
 
   | otherwise =
     fail "Invalid literal"
@@ -330,10 +326,10 @@ parseInit _ =
      fail "Expected an :init section"
 
 
-parseGoal :: [WellFormedSExpr Atom] -> P (Term,[WellFormedSExpr Atom])
+parseGoal :: [WellFormedSExpr Atom] -> P (Pre,[WellFormedSExpr Atom])
 
 parseGoal (WFSList [":goal",tm]:rest) =
-  do goal <- parseTerm tm
+  do goal <- parsePre tm
      return (goal,rest)
 
 parseGoal _ =
@@ -349,8 +345,8 @@ type Atom = T.Text
 
 atom :: Parser Atom
 atom  =
-  do l  <- letter <|> oneOf ":-?"
-     as <- many (alphaNum <|> oneOf "?!_-")
+  do l  <- letter <|> oneOf "=:-?"
+     as <- many (alphaNum <|> oneOf "?!_->")
      return (T.pack (l:as))
 
 isAtom :: WellFormedSExpr Atom -> Maybe Atom

@@ -1,17 +1,37 @@
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE DeriveGeneric #-}
+
 module Input.Types where
 
+import           Data.Hashable (Hashable)
 import qualified Data.Text as T
+import qualified Data.HashMap.Strict as HM
+import qualified Data.HashSet as HS
+import           GHC.Generics (Generic)
 
+
+type Name = T.Text
+type Var  = T.Text
+
+data Term = TName !Name
+          | TVar  !Var
+            deriving (Eq,Ord,Generic,Show)
+
+instance Hashable Term
 
 -- | Types in the domain.
 newtype Type = Type T.Text
-               deriving (Show)
+               deriving (Eq,Ord,Generic,Show)
+
+instance Hashable Type
 
 data Typed a = Typed !a !Type
-               deriving (Show)
+               deriving (Generic,Show)
+
+instance Hashable a => Hashable (Typed a)
 
 -- | A constant, and its type.
-type Constant = Typed T.Text
+type Constant = Typed Name
 
 -- | The story domain.
 data Domain =
@@ -35,6 +55,8 @@ data Domain =
            -- ^ Domain actions
          } deriving (Show)
 
+-- type PredDef = Pred (Typed Name)
+
 -- | The definition of a predicate.
 data PredDef =
   PredDef { pdName :: !T.Text
@@ -44,17 +66,16 @@ data PredDef =
             -- ^ The arguments to the predicate, with their types.
           } deriving (Show)
 
--- | Predicate instantiations with negation, applied to a list of arguments.
+-- | Predicate instantiations, applied to a list of arguments.
 data Pred arg =
-  Pred { predNeg :: !Bool
-         -- ^ True when the predicate is negated
-
-       , predName :: !T.Text
+  Pred { predName :: !T.Text
          -- ^ The name of the predicate
 
        , predArgs :: [arg]
          -- ^ Arguments to the predicate (names or variables)
-       } deriving (Show)
+       } deriving (Eq,Ord,Show,Generic)
+
+instance Hashable arg => Hashable (Pred arg)
 
 type Param = Typed T.Text
 
@@ -62,68 +83,85 @@ data Action =
   Action { actName :: !T.Text
            -- ^ Action name
 
-         , actParams :: [Param]
+         , actParams :: ![Param]
            -- ^ Typed parameters
 
-         , actPrecond :: Term
+         , actPrecond :: !Pre
            -- ^ Preconditions
 
-         , actEffect :: Effect
+         , actEffect :: !Effect
            -- ^ Effects
          } deriving (Show)
 
 
-data Term = TAnd ![Term]
-          | TOr  ![Term]
-          | TNot !Term
-          | TImp !Term !Term
-          | TExists ![Typed T.Text] !Term
-          | TForall ![Typed T.Text] !Term
-          | TLit    !Literal
-            deriving (Show)
+data Pre = PAnd ![Pre]
+         | POr  ![Pre]
+         | PNot !Pre
+         | PImp !Pre !Pre
+         | PExists ![Typed T.Text] !Pre
+         | PForall ![Typed T.Text] !Pre
+         | PLit    !Literal
+           deriving (Show)
 
-elimTAnd :: Term -> [Term]
-elimTAnd (TAnd ts) = ts
-elimTAnd t         = [t]
+elimPAnd :: Pre -> [Pre]
+elimPAnd (PAnd ps) = ps
+elimPAnd p         = [p]
 
-tAnd :: [Term] -> Term
-tAnd [t] = t
-tAnd ts  = TAnd (concatMap elimTAnd ts)
+pAnd :: [Pre] -> Pre
+pAnd [p] = p
+pAnd ps  = PAnd (concatMap elimPAnd ps)
 
-elimTOr :: Term -> [Term]
-elimTOr (TOr ts) = ts
-elimTOr t        = [t]
+elimPOr :: Pre -> [Pre]
+elimPOr (POr ps) = ps
+elimPOr p        = [p]
 
-tOr :: [Term] -> Term
-tOr [t] = t
-tOr ts  = TOr (concatMap elimTOr ts)
+pOr :: [Pre] -> Pre
+pOr [p] = p
+pOr ps  = POr (concatMap elimPOr ps)
 
 data Effect = EForall ![Typed T.Text] Effect
-            | EWhen !Term !Effect
+            | EWhen !Pre !Effect
             | EAnd ![Effect]
+            | ENot !Literal
             | ELit !Literal
               deriving (Show)
+
+elimEAnd :: Effect -> [Effect]
+elimEAnd (EAnd es) = es
+elimEAnd e         = [e]
+
+eAnd :: [Effect] -> Effect
+eAnd [e] = e
+eAnd es  = EAnd (concatMap elimEAnd es)
 
 
 -- | Problem description.
 data Problem dom =
   Problem { probName :: !T.Text
 
-          , probDomain :: dom
+          , probDomain :: !dom
             -- ^ The domain to use when processing this problem.
 
-          , probObjects :: [Constant]
+          , probObjects :: ![Constant]
             -- ^ Objects introduced by the problem
             --
             -- NOTE: the types of the constants must be defined by the domain
 
-          , probInit :: [Literal]
+          , probInit :: ![Literal]
             -- ^ The initial state of the problem.
 
-          , probGoal :: Term
+          , probGoal :: !Pre
             -- ^ The goal state of the problem.
           } deriving (Show)
 
 -- | Predicates instantiated with constant values.
-type Literal = Pred T.Text
+type Literal = Pred Name
 
+
+-- | All constants from the domain and the problem definition, indexed by their
+-- type.
+problemObjects :: Problem Domain -> HM.HashMap Type (HS.HashSet T.Text)
+problemObjects Problem { probDomain = Domain { domConsts }, probObjects } =
+  foldMap mkEntry (probObjects ++ domConsts)
+  where
+  mkEntry (Typed obj ty) = HM.singleton ty (HS.singleton obj)
