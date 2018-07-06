@@ -31,8 +31,8 @@
            (conscious ?actor)
            (or (connected ?from ?to) (connected ?to ?from)))
     :effect
-      (and (at-location ?who ?to)
-           (not (at-location ?who ?from))))
+      (and (at-location ?actor ?to)
+           (not (at-location ?actor ?from))))
 
   (:action intimidate
     :parameters
