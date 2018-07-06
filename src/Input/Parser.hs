@@ -3,6 +3,7 @@
 module Input.Parser (
     parseDomain,
     parseProblem,
+    Atom,
   ) where
 
 import           Input.Types
@@ -66,7 +67,7 @@ parseName str _ =
 -- | Parse out a types definition from a domain.
 parseDomainTypes :: [WellFormedSExpr Atom] -> P ([Type],[WellFormedSExpr Atom])
 
-parseDomainTypes (WFSList tys:rest) =
+parseDomainTypes (WFSList (":types":tys):rest) =
   do (annotated,others) <- parseTyped (fmap Type . parseAtom) tys
      return ([ ty | Typed ty _ <- annotated ] ++ others, rest)
 
