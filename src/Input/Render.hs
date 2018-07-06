@@ -11,13 +11,13 @@ module Input.Render (
 import Input.Parser
 import Input.Types
 
-import           Data.SCargot.Print (basicPrint,setFromCarrier,encodeOne)
+import           Data.SCargot.Print (unconstrainedPrint,setFromCarrier,encodeOne)
 import           Data.SCargot.Repr.Basic (SExpr(..),pattern L,pattern A)
 import qualified Data.Text as T
 
 
 render :: ToSExpr a => a -> T.Text
-render  = encodeOne (setFromCarrier toSExpr (basicPrint id))
+render  = encodeOne (setFromCarrier toSExpr (unconstrainedPrint id))
 
 class ToSExpr a where
   toSExpr :: a -> SExpr Atom
