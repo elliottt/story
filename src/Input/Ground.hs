@@ -7,10 +7,9 @@ module Input.Ground where
 
 import Input.Types
 
-import           Control.Applicative (Alternative,empty)
+import           Control.Applicative (empty)
 import qualified Data.HashMap.Strict as HM
 import qualified Data.HashSet as HS
-import           Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 
@@ -70,7 +69,9 @@ groundProblem prob =
                       , actPrecond = subst su (actPrecond act')
                       , actEffect  = subst su (actEffect act') }
 
-       validateAction ctx new
+       case validateAction ctx new of
+         Just new' -> return new'
+         Nothing   -> empty
 
   dom = probDomain prob
 
@@ -134,31 +135,63 @@ checkProperty ctx name inst =
 
 -- | Validate an action, returning 'empty' if the action is not valid. This
 -- assumes that the action is grounded.
-validateAction :: Alternative f => Context -> Action -> f Action
-validateAction ctx act
-  | validPre ctx (actPrecond act) && validEffect ctx (actEffect act) = pure act
-  | otherwise                                                        = empty
+validateAction :: Context -> Action -> Maybe Action
+validateAction ctx act =
+  do pre' <- validPre ctx (actPrecond act)
+     eff' <- validEff ctx (actEffect act)
+     return act { actPrecond = pre', actEffect = eff' }
 
 -- | Check to see if a grounded precondition is valid.
-validPre :: Context -> Pre -> Bool
+validPre :: Context -> Pre -> Maybe Pre
 validPre ctx p =
   case p of
-    PAnd ps -> all validSimple ps
-    _       -> validSimple p
+    PAnd ps -> pAnd . concat <$> traverse validSimple ps
+    _       -> pAnd          <$> validSimple p
 
   where
 
-  validSimple (PNot (PLit lit)) = maybe True not (validLit ctx lit)
-  validSimple (PLit lit)        = fromMaybe True (validLit ctx lit)
-  validSimple _                 = error "validPre: precondition not grounded"
+  validSimple orig@(PNot (PLit lit)) =
+    case validLit ctx lit of
+      Just False -> Just []
+      Just True  -> Nothing
+      Nothing    -> Just [orig]
+
+  validSimple orig@(PLit lit) =
+    case validLit ctx lit of
+      Just True  -> Just []
+      Just False -> Nothing
+      Nothing    -> Just [orig]
+
+  validSimple _ = error "validPre: precondition not grounded"
 
 -- | Check to see if an effect is valid.
-validEffect :: Context -> Effect -> Bool
-validEffect ctx (EAnd es)   = all (validEffect ctx) es
-validEffect ctx (ENot p)    = maybe True not (validLit ctx p)
-validEffect ctx (ELit p)    = fromMaybe True (validLit ctx p)
-validEffect ctx (EWhen p e) = validPre ctx p && validEffect ctx e
-validEffect _   EForall{}   = error "validEffect: effect not grounded"
+validEff :: Context -> Effect -> Maybe Effect
+validEff ctx eff =
+  case eff of
+    EAnd es -> eAnd . concat <$> traverse validSimple es
+    _       -> eAnd          <$> validSimple eff
+
+  where
+
+  validSimple orig@(ENot lit) =
+    case validLit ctx lit of
+      Just False -> Just []
+      Just True  -> Nothing
+      Nothing    -> Just [orig]
+
+  validSimple orig@(ELit lit) =
+    case validLit ctx lit of
+      Just True  -> Just []
+      Just False -> Nothing
+      Nothing    -> Just [orig]
+
+  validSimple (EWhen p e) =
+    do p' <- validPre ctx p
+       e' <- validEff ctx e
+       return [EWhen p' e']
+
+
+  validSimple _ = error "validEffect: ungrounded effect"
 
 -- | Evaluate a literal, with 'Nothing' representing uncertainty.
 validLit :: Context -> Literal -> Maybe Bool
