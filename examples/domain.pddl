@@ -42,6 +42,7 @@
       (and (at-location ?actor ?loc)
            (at-location ?target ?loc)
            (not (= ?actor ?target))
+           (not (scared ?target))
            (alive ?actor)
            (alive ?target)
            (scary ?actor))

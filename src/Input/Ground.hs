@@ -16,7 +16,7 @@ import qualified Data.Text as T
 -- | Ground an input problem in the context of its domain.
 groundProblem :: Problem Domain -> Problem Domain
 groundProblem prob =
-  prob { probDomain = dom { domActions = actions' }
+  prob { probDomain = dom { domActions = map negAction actions' }
        , probGoal   = PLit goalLit
        , probInit   = negInits negPreconds (probInit prob)
        }
@@ -34,7 +34,7 @@ groundProblem prob =
 
   -- predicates that are used with negation in action preconditions
   negPreconds =
-    HS.filter (\ (Pred name _) -> not (name `HM.member` cProps ctx))
+    HM.filterWithKey (\ (Pred name _) _ -> not (name `HM.member` cProps ctx))
               (foldMap (negativePreconditions . actPrecond) actions')
 
   actions' = concatMap groundAction (goalOperator : domActions dom)
@@ -80,11 +80,16 @@ groundProblem prob =
   -- add assertions of negatives for predicates with negative counterparts that
   -- aren't mentioned in the initial state.
   negInits negs (lit : rest)
-    | lit `elem` negs = lit : negInits (HS.delete lit negs) rest
-    | otherwise       = lit : negInits                negs  rest
+    | lit `HM.member` negs = lit : negInits (HM.delete lit negs) rest
+    | otherwise            = lit : negInits                negs  rest
 
-  negInits negs [] = map mkNegLit (HS.toList negs)
+  negInits negs [] = HM.elems negs
 
+
+  -- add negative atoms in place of negative preconditions, and update 
+  negAction act =
+    act { actPrecond = addNegPre negPreconds (actPrecond act)
+        , actEffect  = addNegEff negPreconds (actEffect act) }
 
 
 -- Context ---------------------------------------------------------------------
@@ -240,7 +245,7 @@ mkNegLit :: Literal -> Literal
 mkNegLit (Pred name args) = Pred ("$not-" <> name) args
 
 -- | Collect negative instances of predicates
-negativePreconditions :: Pre -> HS.HashSet Literal
+negativePreconditions :: Pre -> HM.HashMap Literal Literal
 
 negativePreconditions (PAnd ps) =
   foldMap negativePreconditions ps
@@ -251,11 +256,11 @@ negativePreconditions (POr ps) =
 -- NOTE: equality is handled specially during grounding, so it's not considered
 -- to be a use of negative preconditions.
 negativePreconditions (PNot (PLit lit))
-  | predName lit == T.pack "=" = HS.empty
-  | otherwise                  = HS.singleton lit
+  | predName lit == T.pack "=" = HM.empty
+  | otherwise                  = HM.singleton lit (mkNegLit lit)
 
 negativePreconditions PLit{} =
-  HS.empty
+  HM.empty
 
 negativePreconditions PImp{} =
   error "negativePreconditions: unexpected PImp"
@@ -268,6 +273,35 @@ negativePreconditions PExists{} =
 
 negativePreconditions PForall{} =
   error "negativePreconditions: unexpected PForall"
+
+
+-- | Replace negative occurrences of literals in preconditions with the explicit
+-- negative literals.
+addNegPre :: HM.HashMap Literal Literal -> Pre -> Pre
+addNegPre negs = pAnd . map negSimple . elimPAnd
+  where
+
+  negSimple (PNot (PLit lit)) = PLit (negs HM.! lit)
+  negSimple p                 = p
+
+-- | Add assertions of the explicit negative literals when its normal version is
+-- negated in an effect.
+addNegEff :: HM.HashMap Literal Literal -> Effect -> Effect
+addNegEff negs = eAnd . concatMap negSimple . elimEAnd
+  where
+  negSimple (EWhen p e)  = [EWhen (addNegPre negs p) (addNegEff negs e)]
+
+  negSimple e@(ENot lit) =
+    case HM.lookup lit negs of
+      Just neg -> [e, ELit neg]
+      Nothing  -> [e]
+
+  negSimple e@(ELit lit) =
+    case HM.lookup lit negs of
+      Just neg -> [e, ENot neg]
+      Nothing  -> [e]
+
+  negSimple e            = [e]
 
 
 -- Quantifier Elimination ------------------------------------------------------
