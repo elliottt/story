@@ -17,7 +17,8 @@ import qualified Data.Text as T
 groundProblem :: Problem Domain -> Problem Domain
 groundProblem prob =
   prob { probDomain = dom { domActions = map negAction actions'
-                          , domPreds   = concatMap addNegDef (domPreds dom) }
+                          , domPreds   = PredDef (predName goalLit) []
+                                       : concatMap addNegDef (domPreds dom) }
        , probGoal   = PLit goalLit
        , probInit   = negInits negPreconds (probInit prob)
        }
