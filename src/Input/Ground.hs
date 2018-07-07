@@ -16,11 +16,16 @@ import qualified Data.Text as T
 -- | Ground an input problem in the context of its domain.
 groundProblem :: Problem Domain -> Problem Domain
 groundProblem prob =
-  prob { probDomain = dom { domActions = map negAction actions' }
+  prob { probDomain = dom { domActions = map negAction actions'
+                          , domPreds   = concatMap addNegDef (domPreds dom) }
        , probGoal   = PLit goalLit
        , probInit   = negInits negPreconds (probInit prob)
        }
   where
+
+  dom = probDomain prob
+
+  ctx = groundingContext prob
 
   goalLit = Pred "$goal-achieved" []
 
@@ -73,10 +78,6 @@ groundProblem prob =
          Just new' -> return new'
          Nothing   -> empty
 
-  dom = probDomain prob
-
-  ctx = groundingContext prob
-
   -- add assertions of negatives for predicates with negative counterparts that
   -- aren't mentioned in the initial state.
   negInits negs (lit : rest)
@@ -90,6 +91,15 @@ groundProblem prob =
   negAction act =
     act { actPrecond = addNegPre negPreconds (actPrecond act)
         , actEffect  = addNegEff negPreconds (actEffect act) }
+
+  negNames =
+    HM.fromList [ (name,negName)
+                | (Pred name _, Pred negName _) <- HM.toList negPreconds ]
+
+  addNegDef def@(PredDef name args) =
+    case HM.lookup name negNames of
+      Just negName -> [ def, PredDef negName args ]
+      Nothing      -> [ def ]
 
 
 -- Context ---------------------------------------------------------------------
