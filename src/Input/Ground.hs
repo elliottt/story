@@ -76,8 +76,13 @@ groundProblem prob =
                       , actEffect  = subst su (actEffect act') }
 
        case validateAction ctx new of
-         Just new' -> return new'
-         Nothing   -> empty
+
+         -- eliminate EWhen here, as validateAction will trim out some
+         -- occurrences
+         Just new' -> elimEWhen new'
+
+         -- invalid actions get filtered out
+         Nothing -> empty
 
   -- add assertions of negatives for predicates with negative counterparts that
   -- aren't mentioned in the initial state.
@@ -201,11 +206,14 @@ validEff ctx eff =
       Just False -> Nothing
       Nothing    -> Just [orig]
 
+  -- prune out cases where the predicate is known false
   validSimple (EWhen p e) =
-    do p' <- validPre ctx p
-       e' <- validEff ctx e
-       return [EWhen p' e']
-
+    case validPre ctx p of
+      Nothing        -> return []
+      Just (PAnd []) -> validSimple e
+      Just p'        ->
+        do e' <- validEff ctx e
+           return [EWhen p' e']
 
   validSimple _ = error "validEffect: ungrounded effect"
 
@@ -390,6 +398,30 @@ elimDisjEff e@ENot{} = return e
 elimDisjEff e@ELit{} = return e
 elimDisjEff EForall{} = error "elimDisjEff: unexpected EForall"
 
+
+-- | Remove uses of EWhen in an action.
+elimEWhen :: Action -> [Action]
+elimEWhen act =
+  do (extra,eff) <- elimEWhenEff (actEffect act)
+     return act { actPrecond = pAnd (actPrecond act : extra)
+                , actEffect  = eAnd eff }
+
+elimEWhenEff :: Effect -> [([Pre],[Effect])]
+
+elimEWhenEff (EAnd es) =
+  do res <- traverse elimEWhenEff es
+     let (pss,ess) = unzip res
+     return (concat pss, concat ess)
+
+elimEWhenEff (EWhen p e) =
+  do (ps,es) <- elimEWhenEff e
+     [ (p:ps, es), (nnfPre (PNot p) : ps, []) ]
+
+elimEWhenEff e@ENot{} = return ([], [e])
+elimEWhenEff e@ELit{} = return ([], [e])
+
+elimEWhenEff EForall{} =
+     error "elimEWhenEff: unexpected EForall"
 
 -- Substitution ----------------------------------------------------------------
 

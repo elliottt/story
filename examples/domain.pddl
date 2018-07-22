@@ -12,6 +12,7 @@
   (:properties
     (scary ?x - character)
     (connected ?from ?to - location)
+    (frail ?x - character)
   )
 
   (:predicates
@@ -48,5 +49,6 @@
            (scary ?actor))
 
     :effect
-      (scared ?target))
+      (and (when (frail ?target) (not (alive ?target)))
+           (scared ?target)))
 )

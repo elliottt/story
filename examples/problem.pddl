@@ -4,7 +4,7 @@
   (:domain Example)
 
   (:objects
-    knight dragon - character
+    knight dragon witch - character
     cave castle forest bridge - location)
 
   (:init
@@ -17,7 +17,8 @@
     (scary dragon)
     (connected cave forest)
     (connected forest bridge)
-    (connected bridge castle))
+    (connected bridge castle)
+    (frail witch))
 
   (:goal
     (and (not (and (alive knight) (alive dragon)))
