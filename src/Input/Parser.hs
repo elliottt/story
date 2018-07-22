@@ -11,6 +11,7 @@ import           Input.Types
 import           Control.Applicative ((<|>))
 import           Control.Monad (unless)
 import           Data.SCargot
+import           Data.SCargot.Comments (withLispComments)
 import           Data.SCargot.Repr
 import qualified Data.Text as T
 import           Text.Parsec (many,oneOf)
@@ -340,7 +341,7 @@ parseGoal _ =
 -- Utilities -------------------------------------------------------------------
 
 baseParser :: SExprParser T.Text (WellFormedSExpr Atom)
-baseParser  = asWellFormed (mkParser atom)
+baseParser  = withLispComments (asWellFormed (mkParser atom))
 
 type Atom = T.Text
 
