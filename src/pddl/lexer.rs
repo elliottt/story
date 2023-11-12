@@ -6,9 +6,9 @@ pub enum Token {
 }
 
 #[derive(Debug)]
-struct Loc {
-    start: usize,
-    end: usize,
+pub struct Loc {
+    pub start: usize,
+    pub end: usize,
 }
 
 impl Loc {
@@ -19,8 +19,8 @@ impl Loc {
 
 #[derive(Debug)]
 pub struct Lexeme {
-    token: Token,
-    loc: Loc,
+    pub token: Token,
+    pub loc: Loc,
 }
 
 impl Lexeme {
@@ -30,7 +30,7 @@ impl Lexeme {
 }
 
 pub struct Lexer<'a> {
-    text: &'a str,
+    pub text: &'a str,
     chars: std::iter::Peekable<std::iter::Enumerate<std::str::Chars<'a>>>,
 }
 
@@ -48,10 +48,6 @@ impl<'a> Lexer<'a> {
 
     fn pos(&mut self) -> usize {
         self.chars.peek().map_or(self.text.len(), |(pos, _)| *pos)
-    }
-
-    fn text(&self, start: usize, end: usize) -> &'a str {
-        &self.text[start..end]
     }
 
     fn peek(&mut self) -> Option<char> {

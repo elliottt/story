@@ -10,4 +10,11 @@ fn main() {
     for token in pddl::Lexer::new(text) {
         println!("token: {:?}, text: '{}'", token, token.text(text));
     }
+
+    let text = "(define (problem foo) (:domain foo))";
+    let prob = pddl::Parser::new(text)
+        .problem()
+        .map_err(|e| e.display(text))
+        .unwrap();
+    println!("prob = {prob:#?}");
 }
