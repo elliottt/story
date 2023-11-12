@@ -3,12 +3,14 @@ mod pddl;
 
 fn main() {
 
-    for token in pddl::lexer::Lexer::new("(hello)") {
-        println!("token: {:?}", token);
+    let text = "(hello)";
+    for token in pddl::Lexer::new(text) {
+        println!("token: {:?}, text: '{}'", token, token.text(text));
     }
 
-    for token in pddl::lexer::Lexer::new("( hello   )") {
-        println!("token: {:?}", token);
+    let text = "( hello ;; foo bar baz \n  )";
+    for token in pddl::Lexer::new(text) {
+        println!("token: {:?}, text: '{}'", token, token.text(text));
     }
 
 }

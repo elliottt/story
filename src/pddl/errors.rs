@@ -1,4 +1,4 @@
 
-pub struct ParseError {
+pub enum Error {
     Generic,
 }

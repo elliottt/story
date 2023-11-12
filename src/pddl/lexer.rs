@@ -1,4 +1,3 @@
-
 #[derive(Debug, Eq, PartialEq)]
 pub enum Token {
     LParen,
@@ -24,6 +23,12 @@ pub struct Lexeme {
     loc: Loc,
 }
 
+impl Lexeme {
+    pub fn text<'a>(&self, text: &'a str) -> &'a str {
+        self.loc.text(text)
+    }
+}
+
 pub struct Lexer<'a> {
     text: &'a str,
     chars: std::iter::Peekable<std::iter::Enumerate<std::str::Chars<'a>>>,
@@ -32,7 +37,7 @@ pub struct Lexer<'a> {
 impl<'a> Lexer<'a> {
     pub fn new(text: &'a str) -> Self {
         Self {
-            text: text,
+            text,
             chars: text.chars().enumerate().peekable(),
         }
     }
@@ -59,11 +64,22 @@ impl<'a> Iterator for Lexer<'a> {
 
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(c) = self.peek() {
-            if !c.is_whitespace() {
-                break;
+            if c == ';' {
+                while let Some(c) = self.peek() {
+                    if c == '\n' {
+                        break;
+                    }
+                    self.consume();
+                }
+                continue;
             }
 
-            self.consume();
+            if c.is_whitespace() {
+                self.consume();
+                continue;
+            }
+
+            break;
         }
 
         if self.peek().is_none() {
@@ -80,7 +96,7 @@ impl<'a> Iterator for Lexer<'a> {
                 })
             }
 
-            '_' => {
+            ')' => {
                 let end = self.pos();
                 Some(Lexeme {
                     token: Token::RParen,
@@ -90,7 +106,8 @@ impl<'a> Iterator for Lexer<'a> {
 
             _ => {
                 while let Some(c) = self.peek() {
-                    if c.is_whitespace() || c == '(' || c == ')' {
+                    const OTHERS: &str = "();";
+                    if c.is_whitespace() || OTHERS.contains(c) {
                         break;
                     }
                     self.consume();
@@ -98,9 +115,44 @@ impl<'a> Iterator for Lexer<'a> {
                 let end = self.pos();
                 Some(Lexeme {
                     token: Token::Atom,
-                    loc: Loc { start, end }
+                    loc: Loc { start, end },
                 })
             }
         }
     }
+}
+
+#[test]
+fn test_comments() {
+    let a = Vec::from_iter(Lexer::new("(hello)").map(|t| t.token));
+    let b = Vec::from_iter(Lexer::new("(;hello\nhello;)\n)").map(|t| t.token));
+    assert_eq!(a, b);
+}
+
+#[test]
+fn test_nested() {
+    let a = Vec::from_iter(Lexer::new("(a (b c) d)").map(|t| t.token));
+    assert_eq!(
+        a,
+        [
+            Token::LParen,
+            Token::Atom,
+            Token::LParen,
+            Token::Atom,
+            Token::Atom,
+            Token::RParen,
+            Token::Atom,
+            Token::RParen,
+        ]
+    );
+}
+
+#[test]
+fn test_text() {
+    let text = "(a;foobarbaz\nb hello-world)";
+    let a = Vec::from_iter(Lexer::new(text));
+    assert_eq!(a.len(), 5);
+    assert_eq!(a[1].text(text), "a");
+    assert_eq!(a[3].text(text), "hello-world");
+    assert_eq!(a[4].text(text), ")");
 }
