@@ -1,8 +1,6 @@
-
 mod pddl;
 
 fn main() {
-
     let text = "(hello)";
     for token in pddl::Lexer::new(text) {
         println!("token: {:?}, text: '{}'", token, token.text(text));
@@ -12,5 +10,4 @@ fn main() {
     for token in pddl::Lexer::new(text) {
         println!("token: {:?}, text: '{}'", token, token.text(text));
     }
-
 }
