@@ -1,4 +1,4 @@
-mod pddl;
+use story::pddl;
 
 fn main() {
     let text = "(hello)";
