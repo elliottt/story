@@ -6,3 +6,8 @@ cabal.project.local
 *.prof
 .ghc.environment.*
 tags
+
+
+# Added by cargo
+
+/target
