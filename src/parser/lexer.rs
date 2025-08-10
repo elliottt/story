@@ -5,6 +5,7 @@ pub enum Token {
     Atom,
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Loc {
     start: u32,
     end: u32,
@@ -13,6 +14,11 @@ pub struct Loc {
 impl Loc {
     pub fn new(start: u32, end: u32) -> Self {
         Loc { start, end }
+    }
+
+    pub fn end(text: &str) -> Self {
+        let start = text.len().try_into().unwrap();
+        Loc { start, end: start }
     }
 
     /// Only meant to be used with the same source that the [`Loc`] was created from.
@@ -24,6 +30,7 @@ impl Loc {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Lexeme {
     pub token: Token,
     pub loc: Loc,
