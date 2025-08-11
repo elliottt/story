@@ -68,6 +68,17 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn expect(&mut self, token: lexer::Token) -> Result<lexer::Lexeme> {
+        let next = self.consume()?;
+        if next.token != token {
+            return Result::Err(Error::new(
+                lexer::Loc::end(self.text),
+                format!("Unexpected: {}", self.text(next.loc)),
+            ));
+        }
+        Result::Ok(next)
+    }
+
     pub fn lparen(&mut self) -> Result<()> {
         let next = self.consume()?;
         if next.token != lexer::Token::LParen {

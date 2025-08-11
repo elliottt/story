@@ -2,7 +2,7 @@ mod lexer;
 mod parser;
 pub use lexer::Loc;
 
-use crate::ir::{Arena, Id, Type};
+use crate::ir::{Arena, Constant, Id, NamedArena, Type};
 use lexer::Token;
 use parser::{Error, Parser, Result};
 
@@ -10,27 +10,18 @@ pub fn lexer<'a>(bytes: &'a str) -> impl Iterator<Item = lexer::Lexeme> + 'a {
     lexer::Lexer::new(bytes)
 }
 
-pub fn parse_types(p: &mut Parser<'_>, types: &mut Arena<Type>) -> Result<()> {
+pub fn parse_types(p: &mut Parser<'_>, types: &mut NamedArena<Type>) -> Result<()> {
     // As this is called within the context of a `list`, we terminate when we find a RParen.
     let mut buffer = Vec::new();
-    let mut handling_supertype = false;
     println!("types");
-    loop {
-        if p.peek()?.token != Token::Atom {
-            break;
-        }
-
+    while p.peek()?.token == Token::Atom {
         let next = p.consume()?;
         match p.text(next.loc) {
             "-" => {
-                handling_supertype = true;
-                continue;
-            }
-
-            text if handling_supertype => {
+                let next = p.expect(Token::Atom)?;
                 let super_type = types.add(Type {
                     loc: next.loc,
-                    name: text.to_owned(),
+                    name: p.text(next.loc).to_owned(),
                     super_type: Id::none(),
                 });
                 for ty in buffer.drain(..) {
@@ -43,6 +34,39 @@ pub fn parse_types(p: &mut Parser<'_>, types: &mut Arena<Type>) -> Result<()> {
                 loc: next.loc,
                 name: text.to_owned(),
                 super_type: Id::none(),
+            })),
+        }
+    }
+
+    Result::Ok(())
+}
+
+fn parse_constants(
+    p: &mut Parser<'_>,
+    types: &NamedArena<Type>,
+    constants: &mut NamedArena<Constant>,
+) -> parser::Result<()> {
+    let mut buffer = Vec::new();
+    while p.peek()?.token == Token::Atom {
+        let next = p.consume()?;
+        match p.text(next.loc) {
+            "-" => {
+                let next = p.expect(Token::Atom)?;
+                let name = p.text(next.loc);
+                let to_update = std::mem::take(&mut buffer);
+
+                // TODO: error in the else case
+                if let Some(ty) = types.get(name) {
+                    for id in to_update {
+                        constants[id].ty = ty;
+                    }
+                }
+            }
+
+            text => buffer.push(constants.add(Constant {
+                loc: next.loc,
+                name: text.to_owned(),
+                ty: Id::none(),
             })),
         }
     }
@@ -70,6 +94,7 @@ pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
                 let case = p.token(lexer::Token::Atom)?;
                 match p.text(case.loc) {
                     ":types" => parse_types(p, &mut domain.types)?,
+                    ":constants" => parse_constants(p, &domain.types, &mut domain.constants)?,
 
                     _ => {
                         return Result::Err(Error::new(
@@ -144,13 +169,25 @@ fn test_empty_domain() {
 
 #[test]
 fn test_simple_types() {
-    let text = "(define (domain foo) (:types a b - object))";
+    let text = "(define (domain foo) \
+                (:types a b - object) \
+                (:constants foo bar - a baz - b))";
     let domain = parse_domain(text).expect("Failed to parse domain");
     assert_eq!("foo", domain.name);
 
-    let super_type = Id::new(2);
+    let a = Id::new(0);
+    let b = Id::new(1);
+    let object = Id::new(2);
     assert_eq!(3, domain.types.len());
-    assert_eq!(super_type, domain.types[Id::new(0)].super_type);
-    assert_eq!(super_type, domain.types[Id::new(1)].super_type);
-    assert!(!domain.types[Id::new(2)].super_type.exists());
+    assert_eq!(object, domain.types[a].super_type);
+    assert_eq!(object, domain.types[b].super_type);
+    assert!(!domain.types[object].super_type.exists());
+
+    let foo = Id::new(0);
+    let bar = Id::new(1);
+    let baz = Id::new(2);
+    assert_eq!(3, domain.constants.len());
+    assert_eq!(a, domain.constants[foo].ty);
+    assert_eq!(a, domain.constants[bar].ty);
+    assert_eq!(b, domain.constants[baz].ty);
 }
