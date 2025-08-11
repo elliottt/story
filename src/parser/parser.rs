@@ -9,7 +9,7 @@ pub struct Error {
 }
 
 impl Error {
-    fn new(loc: lexer::Loc, message: String) -> Self {
+    pub fn new(loc: lexer::Loc, message: String) -> Self {
         Error { loc, message }
     }
 
@@ -44,6 +44,10 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn text(&self, loc: lexer::Loc) -> &str {
+        loc.text(self.text)
+    }
+
     pub fn peek(&mut self) -> Result<lexer::Lexeme> {
         match self.lexer.peek() {
             Some(lex) => Result::Ok(lex.clone()),
@@ -76,20 +80,25 @@ impl<'a> Parser<'a> {
     pub fn rparen(&mut self) -> Result<()> {
         let next = self.consume()?;
         if next.token != lexer::Token::RParen {
-            return Error::expected(next.loc, "(", next.loc.text(self.text));
+            return Error::expected(next.loc, ")", next.loc.text(self.text));
         }
 
         Result::Ok(())
     }
 
-    pub fn atom(&mut self) -> Result<&str> {
+    pub fn token(&mut self, token: lexer::Token) -> Result<lexer::Lexeme> {
         let next = self.consume()?;
-        let found = next.loc.text(self.text);
-        if next.token != lexer::Token::Atom {
+        if next.token != token {
+            let found = next.loc.text(self.text);
             return Error::expected(next.loc, "atom", found);
         }
 
-        Result::Ok(found)
+        Result::Ok(next)
+    }
+
+    pub fn atom(&mut self) -> Result<&str> {
+        self.token(lexer::Token::Atom)
+            .map(|lex| lex.loc.text(self.text))
     }
 
     /// Succeeds if the next token parsed is an atom with the same name given.
