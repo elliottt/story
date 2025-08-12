@@ -2,7 +2,7 @@ mod lexer;
 mod parser;
 pub use lexer::Loc;
 
-use crate::ir::{Arena, Constant, Id, NamedArena, Type};
+use crate::ir::{Arena, Constant, Id, NamedArena, Param, Property, Type};
 use lexer::Token;
 use parser::{Error, Parser, Result};
 
@@ -74,6 +74,55 @@ fn parse_constants(
     Result::Ok(())
 }
 
+fn parse_properties(
+    p: &mut Parser<'_>,
+    types: &NamedArena<Type>,
+    properties: &mut NamedArena<Property>,
+) -> parser::Result<()> {
+    while p.peek()?.token == Token::LParen {
+        p.list(|p| {
+            let next = p.expect(Token::Atom)?;
+            let mut prop = Property {
+                loc: next.loc,
+                name: p.text(next.loc).to_owned(),
+                params: Vec::new(),
+            };
+
+            let mut start = 0;
+            while p.peek()?.token == Token::Atom {
+                let next = p.consume()?;
+                match p.text(next.loc) {
+                    "-" => {
+                        let next = p.expect(Token::Atom)?;
+                        let name = p.text(next.loc);
+                        // TODO: error for missing type
+                        if let Some(ty) = types.get(name) {
+                            for param in &mut prop.params[start..] {
+                                param.ty = ty;
+                            }
+                        }
+                        start = prop.params.len();
+                    }
+
+                    text => {
+                        prop.params.push(Param {
+                            loc: next.loc,
+                            name: text.to_owned(),
+                            ty: Id::none(),
+                        });
+                    }
+                }
+            }
+
+            properties.add(prop);
+
+            Result::Ok(())
+        })?;
+    }
+
+    Result::Ok(())
+}
+
 /// Parse a domain specification out of the bytes given.
 pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
     let mut parser = Parser::new(bytes);
@@ -95,6 +144,7 @@ pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
                 match p.text(case.loc) {
                     ":types" => parse_types(p, &mut domain.types)?,
                     ":constants" => parse_constants(p, &domain.types, &mut domain.constants)?,
+                    ":properties" => parse_properties(p, &domain.types, &mut domain.properties)?,
 
                     _ => {
                         return Result::Err(Error::new(
@@ -190,4 +240,29 @@ fn test_simple_types() {
     assert_eq!(a, domain.constants[foo].ty);
     assert_eq!(a, domain.constants[bar].ty);
     assert_eq!(b, domain.constants[baz].ty);
+}
+
+#[test]
+fn test_properties() {
+    let text = "(define (domain foo) \
+                (:types location character) \
+                (:properties (scary ?who - character) (connected ?a ?b - location)))";
+    let domain = parse_domain(text).expect("Failed to parse domain");
+    assert_eq!("foo", domain.name);
+
+    let location = Id::new(0);
+    let character = Id::new(1);
+    assert_eq!(2, domain.types.len());
+    assert!(!domain.types[location].super_type.exists());
+    assert!(!domain.types[character].super_type.exists());
+
+    let scary = Id::new(0);
+    let connected = Id::new(1);
+    assert_eq!(2, domain.properties.len());
+    assert_eq!(1, domain.properties[scary].params.len());
+    assert_eq!(character, domain.properties[scary].params[0].ty);
+    assert_eq!(2, domain.properties[connected].params.len());
+    for param in &domain.properties[connected].params {
+        assert_eq!(location, param.ty);
+    }
 }
