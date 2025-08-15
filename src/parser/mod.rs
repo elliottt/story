@@ -2,12 +2,60 @@ mod lexer;
 mod parser;
 pub use lexer::Loc;
 
-use crate::ir::{Arena, Constant, Id, NamedArena, Param, Predicate, Type};
+use crate::ir::{Action, Constant, Domain, Expr, Id, Ident, NamedArena, Param, Predicate, Type};
 use lexer::Token;
 use parser::{Error, Parser, Result};
 
 pub fn lexer<'a>(bytes: &'a str) -> impl Iterator<Item = lexer::Lexeme> + 'a {
     lexer::Lexer::new(bytes)
+}
+
+/// Parse a domain specification out of the bytes given.
+pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
+    let mut parser = Parser::new(bytes);
+
+    let mut domain = crate::ir::Domain::default();
+
+    parser.list(|p| {
+        p.keyword("define")?;
+
+        p.list(|p| {
+            p.keyword("domain")?;
+            domain.name = String::from(p.atom()?);
+            Result::Ok(())
+        })?;
+
+        while p.peek()?.token != lexer::Token::RParen {
+            p.list(|p| {
+                let case = p.token(lexer::Token::Atom)?;
+                match p.text(case.loc) {
+                    ":types" => parse_types(p, &mut domain.types)?,
+                    ":constants" => parse_constants(p, &domain.types, &mut domain.constants)?,
+                    ":properties" => {
+                        parse_predicates(p, &domain.types, &mut domain.predicates, true)?
+                    }
+                    ":predicates" => {
+                        parse_predicates(p, &domain.types, &mut domain.predicates, false)?
+                    }
+
+                    ":action" => parse_action(p, &mut domain)?,
+
+                    _ => {
+                        return Result::Err(Error::new(
+                            case.loc,
+                            format!("Expected a declaration"),
+                        ));
+                    }
+                }
+
+                Result::Ok(())
+            })?;
+        }
+
+        Result::Ok(())
+    })?;
+
+    Result::Ok(domain)
 }
 
 pub fn parse_types(p: &mut Parser<'_>, types: &mut NamedArena<Type>) -> Result<()> {
@@ -74,6 +122,40 @@ fn parse_constants(
     Result::Ok(())
 }
 
+fn parse_parameters(
+    p: &mut Parser<'_>,
+    types: &NamedArena<Type>,
+    params: &mut Vec<Param>,
+) -> parser::Result<()> {
+    let mut start = 0;
+    while p.next_is(Token::Atom)? {
+        let next = p.consume()?;
+        match p.text(next.loc) {
+            "-" => {
+                let next = p.expect(Token::Atom)?;
+                let name = p.text(next.loc);
+                // TODO: error for missing type
+                if let Some(ty) = types.get(name) {
+                    for param in &mut params[start..] {
+                        param.ty = ty;
+                    }
+                }
+                start = params.len();
+            }
+
+            text => {
+                params.push(Param {
+                    loc: next.loc,
+                    name: text.to_owned(),
+                    ty: Id::none(),
+                });
+            }
+        }
+    }
+
+    Result::Ok(())
+}
+
 fn parse_predicates(
     p: &mut Parser<'_>,
     types: &NamedArena<Type>,
@@ -90,31 +172,7 @@ fn parse_predicates(
                 is_const,
             };
 
-            let mut start = 0;
-            while p.peek()?.token == Token::Atom {
-                let next = p.consume()?;
-                match p.text(next.loc) {
-                    "-" => {
-                        let next = p.expect(Token::Atom)?;
-                        let name = p.text(next.loc);
-                        // TODO: error for missing type
-                        if let Some(ty) = types.get(name) {
-                            for param in &mut prop.params[start..] {
-                                param.ty = ty;
-                            }
-                        }
-                        start = prop.params.len();
-                    }
-
-                    text => {
-                        prop.params.push(Param {
-                            loc: next.loc,
-                            name: text.to_owned(),
-                            ty: Id::none(),
-                        });
-                    }
-                }
-            }
+            parse_parameters(p, types, &mut prop.params)?;
 
             predicates.add(prop);
 
@@ -125,50 +183,93 @@ fn parse_predicates(
     Result::Ok(())
 }
 
-/// Parse a domain specification out of the bytes given.
-pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
-    let mut parser = Parser::new(bytes);
+fn parse_ident(p: &mut Parser<'_>) -> parser::Result<Ident> {
+    let lex = p.expect(Token::Atom)?;
+    Result::Ok(Ident {
+        loc: lex.loc,
+        name: p.text(lex.loc).to_owned(),
+    })
+}
 
-    let mut domain = crate::ir::Domain::default();
+fn parse_expr(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<Id<Expr>> {
+    p.list(|p| {
+        let next = p.expect(Token::Atom)?;
 
-    parser.list(|p| {
-        p.keyword("define")?;
+        match p.text(next.loc) {
+            "not" => {
+                let arg = parse_expr(p, domain)?;
+                Result::Ok(domain.exprs.add(Expr::Not { arg }))
+            }
 
-        p.list(|p| {
-            p.keyword("domain")?;
-            domain.name = String::from(p.atom()?);
-            Result::Ok(())
-        })?;
+            "=" => {
+                let left = parse_ident(p)?;
+                let right = parse_ident(p)?;
+                Result::Ok(domain.exprs.add(Expr::Eq { left, right }))
+            }
 
-        while p.peek()?.token != lexer::Token::RParen {
-            p.list(|p| {
-                let case = p.token(lexer::Token::Atom)?;
-                match p.text(case.loc) {
-                    ":types" => parse_types(p, &mut domain.types)?,
-                    ":constants" => parse_constants(p, &domain.types, &mut domain.constants)?,
-                    ":properties" => {
-                        parse_predicates(p, &domain.types, &mut domain.properties, true)?
-                    }
-                    ":predicates" => {
-                        parse_predicates(p, &domain.types, &mut domain.predicates, false)?
-                    }
+            "and" => {
+                let mut exprs = Vec::new();
+                while p.next_is(Token::LParen)? {
+                    exprs.push(parse_expr(p, domain)?);
+                }
+                Result::Ok(domain.exprs.add(Expr::And { exprs }))
+            }
 
-                    _ => {
-                        return Result::Err(Error::new(
-                            case.loc,
-                            format!("Expected a declaration"),
-                        ));
-                    }
+            text => {
+                let pred = if let Some(pred) = domain.predicates.get(text) {
+                    pred
+                } else {
+                    return Result::Err(Error::new(
+                        next.loc,
+                        format!("Unknown predicate: {}", text),
+                    ));
+                };
+
+                let mut args = Vec::new();
+                while p.next_is(Token::Atom)? {
+                    args.push(parse_ident(p)?);
                 }
 
-                Result::Ok(())
-            })?;
+                Result::Ok(domain.exprs.add(Expr::Inst { pred, args }))
+            }
         }
+    })
+}
 
-        Result::Ok(())
-    })?;
+fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
+    let name = p.expect(Token::Atom)?;
+    let mut action = Action {
+        loc: name.loc,
+        name: p.text(name.loc).to_owned(),
+        params: Vec::new(),
+        precond: Id::none(),
+        effect: Id::none(),
+    };
+    while p.next_is(Token::Atom)? {
+        let next = p.consume()?;
+        match p.text(next.loc) {
+            ":parameters" => p.list(|p| parse_parameters(p, &domain.types, &mut action.params))?,
 
-    Result::Ok(domain)
+            ":precondition" => {
+                action.precond = parse_expr(p, domain)?;
+            }
+
+            ":effect" => {
+                action.effect = parse_expr(p, domain)?;
+            }
+
+            _ => {
+                return Result::Err(Error::new(
+                    next.loc,
+                    format!("Expected :parameters, :precondition, or :effect"),
+                ));
+            }
+        }
+    }
+
+    domain.actions.add(action);
+
+    Result::Ok(())
 }
 
 #[test]
@@ -265,15 +366,15 @@ fn test_properties() {
 
     let scary = Id::new(0);
     let connected = Id::new(1);
-    assert_eq!(2, domain.properties.len());
-    assert_eq!(1, domain.properties[scary].params.len());
-    assert_eq!(character, domain.properties[scary].params[0].ty);
-    assert_eq!(2, domain.properties[connected].params.len());
-    for param in &domain.properties[connected].params {
+    assert_eq!(2, domain.predicates.len());
+    assert_eq!(1, domain.predicates[scary].params.len());
+    assert_eq!(character, domain.predicates[scary].params[0].ty);
+    assert_eq!(2, domain.predicates[connected].params.len());
+    for param in &domain.predicates[connected].params {
         assert_eq!(location, param.ty);
     }
 
-    for prop in domain.properties.iter() {
+    for prop in domain.predicates.iter() {
         assert!(prop.is_const);
     }
 }
@@ -305,4 +406,65 @@ fn test_predicates() {
     for prop in domain.predicates.iter() {
         assert!(!prop.is_const);
     }
+}
+
+#[test]
+fn test_expressions() {
+    let mut domain = parse_domain(
+        "(define (domain :testing) \
+                 (:types a b - object) \
+                 (:properties (prop ?a - a ?b - b)) \
+                 (:predicates (pred ?a ?b - object)))",
+    )
+    .expect("failed to parse testing domain");
+
+    let prop = domain.predicates.get("prop").expect("missing prop");
+    let pred = domain.predicates.get("pred").expect("missing pred");
+
+    let id =
+        parse_expr(&mut Parser::new("(prop ?a ?b)"), &mut domain).expect("Failed to parse inst");
+
+    if let Expr::Inst { pred: p, args } = &domain.exprs[id] {
+        assert_eq!(prop, *p);
+        assert_eq!(2, args.len());
+    } else {
+        panic!("bad parse");
+    }
+
+    let id =
+        parse_expr(&mut Parser::new("(pred ?a ?b)"), &mut domain).expect("Failed to parse inst");
+
+    if let Expr::Inst { pred: p, args } = &domain.exprs[id] {
+        assert_eq!(pred, *p);
+        assert_eq!(2, args.len());
+    } else {
+        panic!("bad parse");
+    }
+}
+
+#[test]
+fn test_actions() {
+    let mut domain = parse_domain(
+        "(define (domain :testing) \
+                 (:types actor location) \
+                 (:predicates \
+                    (at ?who - actor ?where - location)) \
+                 (:action travel \
+                    :parameters (?who - actor ?from ?to - location) \
+                    :precondition (at ?who ?from) \
+                    :effect (and (at ?who ?to) (not (at ?who ?from)))))",
+    )
+    .expect("failed to parse testing domain");
+
+    let actor = domain.types.get("actor").expect("missing type");
+    let location = domain.types.get("location").expect("missing type");
+    assert_eq!(1, domain.predicates.len());
+    assert_eq!(1, domain.actions.len());
+
+    let travel = domain.actions.get("travel").expect("missing action");
+    assert_eq!("travel", domain.actions[travel].name);
+    assert_eq!(3, domain.actions[travel].params.len());
+    assert_eq!(actor, domain.actions[travel].params[0].ty);
+    assert_eq!(location, domain.actions[travel].params[1].ty);
+    assert_eq!(location, domain.actions[travel].params[2].ty);
 }

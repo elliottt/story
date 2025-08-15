@@ -68,6 +68,11 @@ impl<'a> Parser<'a> {
         }
     }
 
+    pub fn next_is(&mut self, token: lexer::Token) -> Result<bool> {
+        let next = self.peek()?;
+        Result::Ok(next.token == token)
+    }
+
     pub fn expect(&mut self, token: lexer::Token) -> Result<lexer::Lexeme> {
         let next = self.consume()?;
         if next.token != token {

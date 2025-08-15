@@ -6,8 +6,9 @@ pub struct Domain {
     pub name: String,
     pub types: NamedArena<Type>,
     pub constants: NamedArena<Constant>,
-    pub properties: NamedArena<Predicate>,
     pub predicates: NamedArena<Predicate>,
+    pub exprs: Arena<Expr>,
+    pub actions: NamedArena<Action>,
 }
 
 pub struct Problem {}
@@ -53,6 +54,45 @@ pub struct Predicate {
 }
 
 impl Named for Predicate {
+    fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+pub struct Ident {
+    pub loc: crate::parser::Loc,
+    pub name: String,
+}
+
+pub enum Expr {
+    Inst {
+        pred: Id<Predicate>,
+        args: Vec<Ident>,
+    },
+
+    Not {
+        arg: Id<Expr>,
+    },
+
+    Eq {
+        left: Ident,
+        right: Ident,
+    },
+
+    And {
+        exprs: Vec<Id<Expr>>,
+    },
+}
+
+pub struct Action {
+    pub loc: crate::parser::Loc,
+    pub name: String,
+    pub params: Vec<Param>,
+    pub precond: Id<Expr>,
+    pub effect: Id<Expr>,
+}
+
+impl Named for Action {
     fn name(&self) -> &str {
         &self.name
     }

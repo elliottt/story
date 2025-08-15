@@ -1,3 +1,5 @@
+use std::u32;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Token {
     LParen,
@@ -14,6 +16,17 @@ pub struct Loc {
 impl Loc {
     pub fn new(start: u32, end: u32) -> Self {
         Loc { start, end }
+    }
+
+    pub fn none() -> Self {
+        Loc {
+            start: u32::MAX,
+            end: u32::MAX,
+        }
+    }
+
+    pub fn exists(&self) -> bool {
+        self.start != u32::MAX
     }
 
     pub fn end(text: &str) -> Self {
