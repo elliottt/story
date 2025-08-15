@@ -2,7 +2,7 @@ mod lexer;
 mod parser;
 pub use lexer::Loc;
 
-use crate::ir::{Arena, Constant, Id, NamedArena, Param, Property, Type};
+use crate::ir::{Arena, Constant, Id, NamedArena, Param, Predicate, Type};
 use lexer::Token;
 use parser::{Error, Parser, Result};
 
@@ -74,18 +74,20 @@ fn parse_constants(
     Result::Ok(())
 }
 
-fn parse_properties(
+fn parse_predicates(
     p: &mut Parser<'_>,
     types: &NamedArena<Type>,
-    properties: &mut NamedArena<Property>,
+    predicates: &mut NamedArena<Predicate>,
+    is_const: bool,
 ) -> parser::Result<()> {
     while p.peek()?.token == Token::LParen {
         p.list(|p| {
             let next = p.expect(Token::Atom)?;
-            let mut prop = Property {
+            let mut prop = Predicate {
                 loc: next.loc,
                 name: p.text(next.loc).to_owned(),
                 params: Vec::new(),
+                is_const,
             };
 
             let mut start = 0;
@@ -114,7 +116,7 @@ fn parse_properties(
                 }
             }
 
-            properties.add(prop);
+            predicates.add(prop);
 
             Result::Ok(())
         })?;
@@ -144,7 +146,12 @@ pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
                 match p.text(case.loc) {
                     ":types" => parse_types(p, &mut domain.types)?,
                     ":constants" => parse_constants(p, &domain.types, &mut domain.constants)?,
-                    ":properties" => parse_properties(p, &domain.types, &mut domain.properties)?,
+                    ":properties" => {
+                        parse_predicates(p, &domain.types, &mut domain.properties, true)?
+                    }
+                    ":predicates" => {
+                        parse_predicates(p, &domain.types, &mut domain.predicates, false)?
+                    }
 
                     _ => {
                         return Result::Err(Error::new(
@@ -264,5 +271,38 @@ fn test_properties() {
     assert_eq!(2, domain.properties[connected].params.len());
     for param in &domain.properties[connected].params {
         assert_eq!(location, param.ty);
+    }
+
+    for prop in domain.properties.iter() {
+        assert!(prop.is_const);
+    }
+}
+
+#[test]
+fn test_predicates() {
+    let text = "(define (domain foo) \
+                (:types location character) \
+                (:predicates (scary ?who - character) (connected ?a ?b - location)))";
+    let domain = parse_domain(text).expect("Failed to parse domain");
+    assert_eq!("foo", domain.name);
+
+    let location = Id::new(0);
+    let character = Id::new(1);
+    assert_eq!(2, domain.types.len());
+    assert!(!domain.types[location].super_type.exists());
+    assert!(!domain.types[character].super_type.exists());
+
+    let scary = Id::new(0);
+    let connected = Id::new(1);
+    assert_eq!(2, domain.predicates.len());
+    assert_eq!(1, domain.predicates[scary].params.len());
+    assert_eq!(character, domain.predicates[scary].params[0].ty);
+    assert_eq!(2, domain.predicates[connected].params.len());
+    for param in &domain.predicates[connected].params {
+        assert_eq!(location, param.ty);
+    }
+
+    for prop in domain.predicates.iter() {
+        assert!(!prop.is_const);
     }
 }

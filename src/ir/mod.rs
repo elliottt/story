@@ -6,7 +6,8 @@ pub struct Domain {
     pub name: String,
     pub types: NamedArena<Type>,
     pub constants: NamedArena<Constant>,
-    pub properties: NamedArena<Property>,
+    pub properties: NamedArena<Predicate>,
+    pub predicates: NamedArena<Predicate>,
 }
 
 pub struct Problem {}
@@ -41,15 +42,17 @@ pub struct Param {
     pub ty: Id<Type>,
 }
 
-/// Properties are like predicates that can never change. They are useful for expressing immutable
-/// facts of the domain, so that during grounding we can control action explosion a bit.
-pub struct Property {
+/// Predicates are assertions about the world state. They can be marked `const`, in which case they
+/// can never change, and can instead be used to prune the space of available actions during
+/// grounding.
+pub struct Predicate {
     pub loc: crate::parser::Loc,
     pub name: String,
     pub params: Vec<Param>,
+    pub is_const: bool,
 }
 
-impl Named for Property {
+impl Named for Predicate {
     fn name(&self) -> &str {
         &self.name
     }
