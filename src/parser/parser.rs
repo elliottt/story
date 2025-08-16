@@ -1,3 +1,5 @@
+use ariadne::{ColorGenerator, Label, ReportKind};
+
 use super::lexer;
 
 pub(crate) type Result<T> = std::result::Result<T, Error>;
@@ -8,60 +10,103 @@ pub struct Error {
     message: String,
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Error: {}", self.message)
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        None
-    }
-
-    fn description(&self) -> &str {
-        &self.message
-    }
-
-    fn cause(&self) -> Option<&dyn std::error::Error> {
-        None
-    }
-}
+pub type Report<'a> = ariadne::Report<'a, (&'a str, std::ops::Range<usize>)>;
+pub type ReportBuilder<'a> = ariadne::ReportBuilder<'a, (&'a str, std::ops::Range<usize>)>;
 
 impl Error {
     pub fn new(loc: lexer::Loc, message: String) -> Self {
         Error { loc, message }
     }
 
-    fn expected<T>(loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
-        Result::Err(Error::new(
-            loc,
-            format!("Expected `{}`, but found `{}` instead", expected, found),
-        ))
+    pub fn report<'a>(self, file: &'a str) -> Report<'a> {
+        Report::build(ReportKind::Error, (file, self.loc.range()))
+            .with_label(Label::new((file, self.loc.range())))
+            .with_message(self.message)
+            .finish()
+    }
+}
+
+pub struct ErrorBuilder<'p, 'a> {
+    parser: &'p mut Parser<'a>,
+    builder: Option<ReportBuilder<'a>>,
+    colors: ColorGenerator,
+}
+
+impl Drop for ErrorBuilder<'_, '_> {
+    fn drop(&mut self) {
+        let builder = self.builder.take().unwrap();
+        self.parser.errors.push(builder.finish())
+    }
+}
+
+impl<'p, 'a> ErrorBuilder<'p, 'a> {
+    pub fn new(parser: &'p mut Parser<'a>, loc: lexer::Loc) -> Self {
+        let builder = Report::build(ReportKind::Error, (parser.file, loc.range()));
+        Self {
+            parser,
+            builder: Some(builder),
+            colors: ColorGenerator::new(),
+        }
     }
 
-    fn expected_atom<T>(loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
-        Result::Err(Error::new(
-            loc,
-            format!(
-                "Expected atom `{}`, but found `{}` instead",
-                expected, found
-            ),
-        ))
+    pub fn label(&mut self, loc: lexer::Loc, message: String) -> &mut Self {
+        if let Some(builder) = self.builder.as_mut() {
+            builder.add_label(
+                Label::new((self.parser.file, loc.range()))
+                    .with_message(message)
+                    .with_color(self.colors.next()),
+            )
+        }
+        self
     }
 }
 
 pub struct Parser<'a> {
     lexer: std::iter::Peekable<lexer::Lexer<'a>>,
+    file: &'a str,
     text: &'a str,
+    errors: Vec<Report<'a>>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(text: &'a str) -> Self {
+    pub fn new(file: &'a str, text: &'a str) -> Self {
         Parser {
             lexer: lexer::Lexer::new(text).peekable(),
+            file,
             text,
+            errors: Vec::new(),
         }
+    }
+
+    pub fn take_errors(self) -> Vec<Report<'a>> {
+        self.errors
+    }
+
+    pub fn error<'p>(&'p mut self, loc: lexer::Loc, message: String) -> ErrorBuilder<'p, 'a> {
+        let mut builder = ErrorBuilder::new(self, loc);
+        builder.label(loc, message);
+        builder
+    }
+
+    pub fn parse_error<T>(&self, loc: lexer::Loc, message: String) -> Result<T> {
+        Result::Err(Error::new(loc, message))
+    }
+
+    fn expected<T>(&self, loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
+        self.parse_error(
+            loc,
+            format!("Expected `{}`, but found `{}` instead", expected, found),
+        )
+    }
+
+    fn expected_atom<T>(&self, loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
+        self.parse_error(
+            loc,
+            format!(
+                "Expected atom `{}`, but found `{}` instead",
+                expected, found
+            ),
+        )
     }
 
     pub fn text(&self, loc: lexer::Loc) -> &str {
@@ -71,20 +116,20 @@ impl<'a> Parser<'a> {
     pub fn peek(&mut self) -> Result<lexer::Lexeme> {
         match self.lexer.peek() {
             Some(lex) => Result::Ok(lex.clone()),
-            None => Result::Err(Error::new(
+            None => self.parse_error(
                 lexer::Loc::end(self.text),
                 "Unexpected end of input".to_owned(),
-            )),
+            ),
         }
     }
 
     pub fn consume(&mut self) -> Result<lexer::Lexeme> {
         match self.lexer.next() {
             Some(lex) => Result::Ok(lex),
-            None => Result::Err(Error::new(
+            None => self.parse_error(
                 lexer::Loc::end(self.text),
                 "Unexpected end of input".to_owned(),
-            )),
+            ),
         }
     }
 
@@ -96,10 +141,10 @@ impl<'a> Parser<'a> {
     pub fn expect(&mut self, token: lexer::Token) -> Result<lexer::Lexeme> {
         let next = self.consume()?;
         if next.token != token {
-            return Result::Err(Error::new(
+            return self.parse_error(
                 lexer::Loc::end(self.text),
                 format!("Unexpected: {}", self.text(next.loc)),
-            ));
+            );
         }
         Result::Ok(next)
     }
@@ -107,7 +152,7 @@ impl<'a> Parser<'a> {
     pub fn lparen(&mut self) -> Result<()> {
         let next = self.consume()?;
         if next.token != lexer::Token::LParen {
-            return Error::expected(next.loc, "(", next.loc.text(self.text));
+            return self.expected(next.loc, "(", next.loc.text(self.text));
         }
 
         Result::Ok(())
@@ -116,7 +161,7 @@ impl<'a> Parser<'a> {
     pub fn rparen(&mut self) -> Result<()> {
         let next = self.consume()?;
         if next.token != lexer::Token::RParen {
-            return Error::expected(next.loc, ")", next.loc.text(self.text));
+            return self.expected(next.loc, ")", next.loc.text(self.text));
         }
 
         Result::Ok(())
@@ -126,7 +171,7 @@ impl<'a> Parser<'a> {
         let next = self.consume()?;
         if next.token != token {
             let found = next.loc.text(self.text);
-            return Error::expected(next.loc, "atom", found);
+            return self.expected(next.loc, "atom", found);
         }
 
         Result::Ok(next)
@@ -142,7 +187,7 @@ impl<'a> Parser<'a> {
         let next = self.consume()?;
         let found = next.loc.text(self.text);
         if next.token != lexer::Token::Atom || found != expected {
-            return Error::expected_atom(next.loc, expected, found);
+            return self.expected_atom(next.loc, expected, found);
         }
 
         Result::Ok(())

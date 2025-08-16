@@ -14,8 +14,18 @@ fn main() -> anyhow::Result<()> {
 
     println!("Using domain: {}", args.domain);
 
-    let text = std::fs::read_to_string(args.domain)?;
-    let domain = parser::parse_domain(&text)?;
+    let path = args.domain.as_ref();
+    let text = std::fs::read_to_string(path)?;
+    let domain = match parser::parse_domain(path, &text) {
+        Result::Ok(d) => d,
+        Result::Err(es) => {
+            let source = ariadne::Source::from(&text);
+            for e in es {
+                e.print((path, &source))?;
+            }
+            return Result::Ok(());
+        }
+    };
 
     println!("{:#?}", domain);
 

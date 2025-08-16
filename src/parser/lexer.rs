@@ -9,8 +9,8 @@ pub enum Token {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Loc {
-    start: u32,
-    end: u32,
+    pub start: u32,
+    pub end: u32,
 }
 
 impl Loc {
@@ -23,6 +23,10 @@ impl Loc {
             start: u32::MAX,
             end: u32::MAX,
         }
+    }
+
+    pub fn range(&self) -> std::ops::Range<usize> {
+        self.start.try_into().unwrap()..self.end.try_into().unwrap()
     }
 
     pub fn exists(&self) -> bool {

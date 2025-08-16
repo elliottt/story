@@ -1,4 +1,4 @@
-use std::{any::Any, collections::HashMap};
+use std::{collections::HashMap};
 
 pub struct Id<T: 'static> {
     index: u32,
