@@ -61,7 +61,6 @@ pub fn parse_domain<'a>(bytes: &'a str) -> Result<crate::ir::Domain> {
 pub fn parse_types(p: &mut Parser<'_>, types: &mut NamedArena<Type>) -> Result<()> {
     // As this is called within the context of a `list`, we terminate when we find a RParen.
     let mut buffer = Vec::new();
-    println!("types");
     while p.peek()?.token == Token::Atom {
         let next = p.consume()?;
         match p.text(next.loc) {
@@ -213,6 +212,20 @@ fn parse_expr(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<Id<Expr
                     exprs.push(parse_expr(p, domain)?);
                 }
                 Result::Ok(domain.exprs.add(Expr::And { exprs }))
+            }
+
+            "or" => {
+                let mut exprs = Vec::new();
+                while p.next_is(Token::LParen)? {
+                    exprs.push(parse_expr(p, domain)?);
+                }
+                Result::Ok(domain.exprs.add(Expr::Or { exprs }))
+            }
+
+            "when" => {
+                let pred = parse_expr(p, domain)?;
+                let cons = parse_expr(p, domain)?;
+                Result::Ok(domain.exprs.add(Expr::When { pred, cons }))
             }
 
             text => {

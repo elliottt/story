@@ -8,6 +8,26 @@ pub struct Error {
     message: String,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Error: {}", self.message)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        None
+    }
+
+    fn description(&self) -> &str {
+        &self.message
+    }
+
+    fn cause(&self) -> Option<&dyn std::error::Error> {
+        None
+    }
+}
+
 impl Error {
     pub fn new(loc: lexer::Loc, message: String) -> Self {
         Error { loc, message }

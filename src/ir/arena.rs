@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::{any::Any, collections::HashMap};
 
-pub struct Id<T> {
+pub struct Id<T: 'static> {
     index: u32,
     _elem: std::marker::PhantomData<T>,
 }
@@ -25,12 +25,14 @@ impl<T> Id<T> {
     }
 }
 
-impl<T> std::fmt::Debug for Id<T> {
+impl<T: 'static> std::fmt::Debug for Id<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Id")
-            .field("index", &self.index)
-            .field("_elem", &self._elem)
-            .finish()
+        write!(f, "Id<{}>", std::any::type_name::<T>())?;
+        if self.exists() {
+            write!(f, "({})", self.index)
+        } else {
+            write!(f, "::none")
+        }
     }
 }
 
@@ -53,6 +55,7 @@ impl<T> Clone for Id<T> {
 
 impl<T> Copy for Id<T> {}
 
+#[derive(Debug)]
 pub struct Arena<T> {
     elems: Vec<T>,
 }
@@ -101,7 +104,8 @@ impl<T> Default for Arena<T> {
     }
 }
 
-pub struct NamedArena<T> {
+#[derive(Debug)]
+pub struct NamedArena<T: 'static> {
     elems: Arena<T>,
     names: HashMap<String, Id<T>>,
 }
