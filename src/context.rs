@@ -2,26 +2,9 @@ use ariadne::{Cache, Source};
 
 use crate::arena::{Id, Named, NamedArena};
 
-pub struct Context {
-    pub files: NamedArena<File>,
-}
+pub type Files = NamedArena<File>;
 
-impl Context {
-    pub fn new() -> Self {
-        Context {
-            files: NamedArena::new(),
-        }
-    }
-
-    /// TODO: remove this by making the errors the parser returns into plain old values that can be
-    /// used to re-create the report values later. This would mean that the files arena could be
-    /// mutably borrowed instead, avoiding the copy here.
-    pub fn file_cache(&self) -> NamedArena<File> {
-        self.files.clone()
-    }
-}
-
-impl Cache<Id<File>> for NamedArena<File> {
+impl Cache<Id<File>> for Files {
     type Storage = String;
 
     fn fetch(&mut self, id: &Id<File>) -> Result<&Source<Self::Storage>, impl std::fmt::Debug> {

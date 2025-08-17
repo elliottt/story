@@ -1,24 +1,19 @@
 pub use crate::arena::{Arena, Id, Named, NamedArena};
 
-#[derive(Default, Debug)]
-pub struct Domain {
-    pub name: String,
-    pub types: NamedArena<Type>,
-    pub constants: NamedArena<Constant>,
-    pub predicates: NamedArena<Predicate>,
+#[derive(Clone, Debug, Default)]
+pub struct Context {
+    pub domain_name: Ident,
+    pub problem_name: Ident,
+    pub constants: Arena<Constant>,
     pub exprs: Arena<Expr>,
+    pub types: NamedArena<Type>,
+    pub predicates: NamedArena<Predicate>,
     pub actions: NamedArena<Action>,
-}
-
-#[derive(Default, Debug)]
-pub struct Problem {
-    pub name: String,
-    pub domain: String,
     pub init: Vec<Id<Expr>>,
     pub goal: Id<Expr>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Type {
     pub loc: crate::parser::Loc,
     pub name: String,
@@ -31,7 +26,7 @@ impl Named for Type {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Constant {
     pub loc: crate::parser::Loc,
     pub name: String,
@@ -44,7 +39,7 @@ impl Named for Constant {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Param {
     pub loc: crate::parser::Loc,
     pub name: String,
@@ -54,7 +49,7 @@ pub struct Param {
 /// Predicates are assertions about the world state. They can be marked `const`, in which case they
 /// can never change, and can instead be used to prune the space of available actions during
 /// grounding.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Predicate {
     pub loc: crate::parser::Loc,
     pub name: String,
@@ -68,13 +63,13 @@ impl Named for Predicate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Ident {
     pub loc: crate::parser::Loc,
     pub name: String,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Expr {
     Inst {
         pred: Id<Predicate>,
@@ -104,7 +99,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Action {
     pub loc: crate::parser::Loc,
     pub name: String,

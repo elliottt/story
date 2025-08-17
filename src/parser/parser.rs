@@ -31,12 +31,26 @@ impl<'p, 'a> ErrorBuilder<'p, 'a> {
         }
     }
 
+    pub fn next_color(&mut self) -> Color {
+        self.colors.next()
+    }
+
     pub fn label(&mut self, loc: lexer::Loc, message: impl ToString) -> Color {
         let color = self.colors.next();
+        self.label_with_color(loc, color, message);
+        color
+    }
+
+    pub fn label_with_color(
+        &mut self,
+        loc: lexer::Loc,
+        color: Color,
+        message: impl ToString,
+    ) -> &mut Self {
         if let Some(builder) = self.builder.as_mut() {
             builder.add_label(Label::new(loc).with_message(message).with_color(color))
         }
-        color
+        self
     }
 
     pub fn note(&mut self, message: impl ToString) -> &mut Self {

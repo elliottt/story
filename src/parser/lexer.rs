@@ -1,5 +1,5 @@
-use std::u32;
 use ariadne::Span;
+use std::u32;
 
 use crate::{File, arena::Id};
 
@@ -15,6 +15,12 @@ pub struct Loc {
     pub file: Id<File>,
     pub start: u32,
     pub end: u32,
+}
+
+impl Default for Loc {
+    fn default() -> Self {
+        Self::none()
+    }
 }
 
 impl Loc {
@@ -54,7 +60,11 @@ impl Loc {
 
     pub fn end(file: Id<File>, text: &str) -> Self {
         let start = text.len().try_into().unwrap();
-        Loc { file, start, end: start }
+        Loc {
+            file,
+            start,
+            end: start,
+        }
     }
 
     /// Only meant to be used with the same source that the [`Loc`] was created from.

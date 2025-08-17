@@ -1,14 +1,14 @@
 use ariadne::Fmt;
-use std::collections::HashMap;
 
 mod lexer;
 mod parser;
 pub use lexer::Loc;
 
-use crate::ir::{
-    Action, Constant, Domain, Expr, Ident, NamedArena, Param, Predicate, Problem, Type,
+use crate::{
+    File, Files,
+    arena::Id,
+    ir::{Action, Constant, Context, Expr, Ident, NamedArena, Param, Predicate, Type},
 };
-use crate::{Context, File, arena::Id};
 use lexer::Token;
 use parser::{Parser, Result};
 
@@ -18,19 +18,18 @@ pub fn lexer<'a>(bytes: &'a str) -> impl Iterator<Item = lexer::Lexeme> + 'a {
 
 /// Parse a domain specification out of the bytes given.
 pub fn parse_domain<'a>(
-    context: &'a Context,
+    files: &'a Files,
     file: Id<File>,
-) -> std::result::Result<Domain, Vec<parser::Report<'a>>> {
-    let mut parser = Parser::new(file, context.files[file].source.text());
-
-    let mut domain = crate::ir::Domain::default();
+    context: &mut Context,
+) -> std::result::Result<(), Vec<parser::Report<'a>>> {
+    let mut parser = Parser::new(file, files[file].source.text());
 
     let res = parser.list(|p| {
         p.keyword("define")?;
 
         p.list(|p| {
             p.keyword("domain")?;
-            domain.name = String::from(p.atom()?);
+            context.domain_name = parse_ident(p)?;
             Result::Ok(())
         })?;
 
@@ -38,16 +37,16 @@ pub fn parse_domain<'a>(
             p.list(|p| {
                 let case = p.token(lexer::Token::Atom)?;
                 match p.text(case.loc) {
-                    ":types" => parse_types(p, &mut domain.types)?,
-                    ":constants" => parse_constants(p, &domain.types, &mut domain.constants)?,
+                    ":types" => parse_types(p, &mut context.types)?,
+                    ":constants" => parse_constants(p, context)?,
                     ":properties" => {
-                        parse_predicates(p, &domain.types, &mut domain.predicates, true)?
+                        parse_predicates(p, &context.types, &mut context.predicates, true)?
                     }
                     ":predicates" => {
-                        parse_predicates(p, &domain.types, &mut domain.predicates, false)?
+                        parse_predicates(p, &context.types, &mut context.predicates, false)?
                     }
 
-                    ":action" => parse_action(p, &mut domain)?,
+                    ":action" => parse_action(p, context)?,
 
                     _ => {
                         return p.parse_error(case.loc, "Expected a declaration".to_owned());
@@ -65,7 +64,7 @@ pub fn parse_domain<'a>(
     match res {
         std::result::Result::Ok(_) => {
             if errs.is_empty() {
-                return std::result::Result::Ok(domain);
+                return std::result::Result::Ok(());
             }
         }
         std::result::Result::Err(_) => {}
@@ -76,21 +75,18 @@ pub fn parse_domain<'a>(
 
 /// Parse a problem description.
 pub fn parse_problem<'a>(
-    context: &'a Context,
+    files: &'a Files,
     file: Id<File>,
-    domains: &mut HashMap<String, Domain>,
-) -> std::result::Result<Problem, Vec<parser::Report<'a>>> {
-    let mut parser = Parser::new(file, context.files[file].source.text());
-    let mut problem = crate::ir::Problem::default();
-
-    let mut empty_domain = Domain::default();
+    context: &mut Context,
+) -> std::result::Result<(), Vec<parser::Report<'a>>> {
+    let mut parser = Parser::new(file, files[file].source.text());
 
     let res = parser.list(|p| {
         p.keyword("define")?;
 
         p.list(|p| {
             p.keyword("problem")?;
-            problem.name = p.atom()?.to_owned();
+            context.problem_name = parse_ident(p)?;
             Result::Ok(())
         })?;
 
@@ -100,28 +96,34 @@ pub fn parse_problem<'a>(
                 match p.text(case.loc) {
                     ":domain" => {
                         let name = p.expect(Token::Atom)?;
-                        problem.domain = p.text(name.loc).to_owned();
+                        if p.text(name.loc) != context.domain_name.name {
+                            let text = p.text(name.loc).to_owned();
+                            let mut e = p.error(name.loc, "Unknown domain");
+                            if context.domain_name.loc.exists() {
+                                let b = e.label(name.loc, "Referenced here");
+                                let a = e.label(context.domain_name.loc, "Defined here");
+                                e.note(format!(
+                                    "Unknown domain `{}`, expected `{}`",
+                                    text.fg(b),
+                                    context.domain_name.name.clone().fg(a),
+                                ));
+                            } else {
+                                let a = e.label(context.domain_name.loc, "Defined here");
+                                e.note(format!("Unknown domain named `{}`", text.fg(a),));
+                            }
+                        }
                     }
 
                     ":objects" => {
-                        let domain = domains
-                            .get_mut(&problem.domain)
-                            .unwrap_or(&mut empty_domain);
-                        parse_constants(p, &domain.types, &mut domain.constants)?;
+                        parse_constants(p, context)?;
                     }
 
                     ":init" => {
-                        let domain = domains
-                            .get_mut(&problem.domain)
-                            .unwrap_or(&mut empty_domain);
-                        problem.init = parse_expr_list(p, &[], domain)?;
+                        context.init = parse_expr_list(p, context, &[])?;
                     }
 
                     ":goal" => {
-                        let domain = domains
-                            .get_mut(&problem.domain)
-                            .unwrap_or(&mut empty_domain);
-                        problem.goal = parse_expr(p, &[], domain)?;
+                        context.goal = parse_expr(p, context, &[])?;
                     }
 
                     _ => {
@@ -132,12 +134,6 @@ pub fn parse_problem<'a>(
             })?;
         }
 
-        // If we didn't find a domain, any expressions created won't be anchored to a domain's
-        // expression store, so we don't produce anything..
-        if !domains.contains_key(&problem.domain) {
-            return Result::Err(());
-        }
-
         Result::Ok(())
     });
 
@@ -145,7 +141,7 @@ pub fn parse_problem<'a>(
     match res {
         Result::Ok(_) => {
             if errs.is_empty() {
-                return std::result::Result::Ok(problem);
+                return std::result::Result::Ok(());
             }
         }
         Result::Err(_) => {}
@@ -201,25 +197,21 @@ pub fn parse_types(p: &mut Parser<'_>, types: &mut NamedArena<Type>) -> Result<(
     Result::Ok(())
 }
 
-fn parse_constants(
-    p: &mut Parser<'_>,
-    types: &NamedArena<Type>,
-    constants: &mut NamedArena<Constant>,
-) -> parser::Result<()> {
+fn parse_constants(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()> {
     let mut buffer = Vec::new();
     while p.peek()?.token == Token::Atom {
         let next = p.consume()?;
         match p.text(next.loc) {
             "-" => {
-                let ty = parse_type_ref(p, types)?;
+                let ty = parse_type_ref(p, &context.types)?;
                 for id in std::mem::take(&mut buffer) {
-                    constants[id].ty = ty;
+                    context.constants[id].ty = ty;
                 }
             }
 
             text => {
                 let name = text.to_owned();
-                if let Some(prev) = constants.iter().find(|c| c.name == text) {
+                if let Some(prev) = context.constants.iter().find(|c| c.name == text) {
                     let mut e = p.error(next.loc, "Constant redefined");
                     let a = e.label(prev.loc, "Previous definition");
                     e.label(next.loc, "Redefinition here");
@@ -228,7 +220,7 @@ fn parse_constants(
                         name.fg(a)
                     ));
                 } else {
-                    buffer.push(constants.add(Constant {
+                    buffer.push(context.constants.add(Constant {
                         loc: next.loc,
                         name,
                         ty: Id::none(),
@@ -331,54 +323,54 @@ fn parse_ident(p: &mut Parser<'_>) -> parser::Result<Ident> {
 
 fn parse_expr_list(
     p: &mut Parser<'_>,
+    context: &mut Context,
     params: &[Param],
-    domain: &mut Domain,
 ) -> parser::Result<Vec<Id<Expr>>> {
     let mut result = Vec::new();
     while p.next_is(Token::LParen)? {
-        result.push(parse_expr(p, params, domain)?);
+        result.push(parse_expr(p, context, params)?);
     }
     parser::Result::Ok(result)
 }
 
 fn parse_expr(
     p: &mut Parser<'_>,
+    context: &mut Context,
     params: &[Param],
-    domain: &mut Domain,
 ) -> parser::Result<Id<Expr>> {
     p.list(|p| {
         let next = p.expect(Token::Atom)?;
 
         match p.text(next.loc) {
             "not" => {
-                let arg = parse_expr(p, params, domain)?;
-                Result::Ok(domain.exprs.add(Expr::Not { arg }))
+                let arg = parse_expr(p, context, params)?;
+                Result::Ok(context.exprs.add(Expr::Not { arg }))
             }
 
             "=" => {
                 let left = parse_ident(p)?;
                 let right = parse_ident(p)?;
-                Result::Ok(domain.exprs.add(Expr::Eq { left, right }))
+                Result::Ok(context.exprs.add(Expr::Eq { left, right }))
             }
 
             "and" => {
-                let exprs = parse_expr_list(p, params, domain)?;
-                Result::Ok(domain.exprs.add(Expr::And { exprs }))
+                let exprs = parse_expr_list(p, context, params)?;
+                Result::Ok(context.exprs.add(Expr::And { exprs }))
             }
 
             "or" => {
-                let exprs = parse_expr_list(p, params, domain)?;
-                Result::Ok(domain.exprs.add(Expr::Or { exprs }))
+                let exprs = parse_expr_list(p, context, params)?;
+                Result::Ok(context.exprs.add(Expr::Or { exprs }))
             }
 
             "when" => {
-                let pred = parse_expr(p, params, domain)?;
-                let cons = parse_expr(p, params, domain)?;
-                Result::Ok(domain.exprs.add(Expr::When { pred, cons }))
+                let pred = parse_expr(p, context, params)?;
+                let cons = parse_expr(p, context, params)?;
+                Result::Ok(context.exprs.add(Expr::When { pred, cons }))
             }
 
             text => {
-                let pred = if let Some(pred) = domain.predicates.get(text) {
+                let pred = if let Some(pred) = context.predicates.get(text) {
                     pred
                 } else {
                     let name = text.to_owned();
@@ -404,7 +396,7 @@ fn parse_expr(
                 }
 
                 {
-                    let pred = &domain.predicates[pred];
+                    let pred = &context.predicates[pred];
                     if args.len() != pred.params.len() {
                         let mut e = p.error(next.loc, "Arity mismatch");
                         let a = e.label(pred.loc, "Definition");
@@ -427,7 +419,7 @@ fn parse_expr(
 
                             def.ty
                         } else {
-                            let Some(def) = domain.constants.iter().find(|c| c.name == arg.name)
+                            let Some(def) = context.constants.iter().find(|c| c.name == arg.name)
                             else {
                                 p.error(arg.loc, "Unknown constant")
                                     .label(arg.loc, "Used here");
@@ -437,21 +429,29 @@ fn parse_expr(
                             def.ty
                         };
 
-                        if arg_ty != param.ty {
+                        if arg_ty.exists() && param.ty.exists() && arg_ty != param.ty {
                             let mut e = p.error(arg.loc, "Type mismatch");
-                            e.label(arg.loc, format!("Has type `{}`", domain.types[arg_ty].name));
-                            e.note(format!("Expected type `{}`", domain.types[param.ty].name));
+                            let a = e.next_color();
+                            let b = e.next_color();
+                            let expected_ty = context.types[param.ty].name.clone().fg(a);
+                            let actual_ty = context.types[arg_ty].name.clone().fg(b);
+                            e.label_with_color(param.loc, a, format!("Has type `{}`", expected_ty));
+                            e.label_with_color(arg.loc, b, format!("Has type `{}`", actual_ty));
+                            e.note(format!(
+                                "Expected type `{}`, but found type `{}`",
+                                expected_ty, actual_ty,
+                            ));
                         }
                     }
                 }
 
-                Result::Ok(domain.exprs.add(Expr::Inst { pred, args }))
+                Result::Ok(context.exprs.add(Expr::Inst { pred, args }))
             }
         }
     })
 }
 
-fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
+fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()> {
     let name = p.expect(Token::Atom)?;
     let mut action = Action {
         loc: name.loc,
@@ -461,7 +461,7 @@ fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
         effect: Id::none(),
     };
 
-    if let Some(prev) = domain.actions.iter().find(|a| a.name == action.name) {
+    if let Some(prev) = context.actions.iter().find(|a| a.name == action.name) {
         let mut e = p.error(
             action.loc,
             format!("Action `{}` has already been defined", action.name),
@@ -473,14 +473,14 @@ fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
     while p.next_is(Token::Atom)? {
         let next = p.consume()?;
         match p.text(next.loc) {
-            ":parameters" => p.list(|p| parse_parameters(p, &domain.types, &mut action.params))?,
+            ":parameters" => p.list(|p| parse_parameters(p, &context.types, &mut action.params))?,
 
             ":precondition" => {
-                action.precond = parse_expr(p, &action.params, domain)?;
+                action.precond = parse_expr(p, context, &action.params)?;
             }
 
             ":effect" => {
-                action.effect = parse_expr(p, &action.params, domain)?;
+                action.effect = parse_expr(p, context, &action.params)?;
             }
 
             _ => {
@@ -492,7 +492,7 @@ fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
         }
     }
 
-    domain.actions.add(action);
+    context.actions.add(action);
 
     Result::Ok(())
 }

@@ -1,8 +1,6 @@
 use clap::Parser;
-use std::collections::HashMap;
 
-use story::parser;
-use story::{Context, File};
+use story::{File, Files, ir::Context, parser};
 
 #[derive(Parser, Debug)]
 #[command()]
@@ -17,41 +15,36 @@ struct Args {
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let mut context = Context::new();
-    let domain_file = context.files.add(File::new(args.domain)?);
-    let problem_file = context.files.add(File::new(args.problem)?);
+    let mut files = Files::new();
+    let mut context = Context::default();
+    let domain_file = files.add(File::new(args.domain)?);
+    let problem_file = files.add(File::new(args.problem)?);
 
-    let mut domains = HashMap::new();
-    let mut problem = None;
     let mut errs = Vec::new();
 
-    match parser::parse_domain(&context, domain_file) {
-        Result::Ok(d) => {
-            domains.insert(d.name.clone(), d);
-        }
+    match parser::parse_domain(&files, domain_file, &mut context) {
+        Result::Ok(_) => {}
         Result::Err(es) => errs.extend(es),
     }
 
     // No point in parsing the problem if the domain failed
     if errs.is_empty() {
-        match parser::parse_problem(&context, problem_file, &mut domains) {
-            Result::Ok(p) => {
-                problem.replace(p);
-            }
+        match parser::parse_problem(&files, problem_file, &mut context) {
+            Result::Ok(_) => {}
             Result::Err(es) => errs.extend(es),
         }
     }
 
     if !errs.is_empty() {
-        let mut cache = context.file_cache();
+        // If the errors produced by the parser weren't `Report<'a>`, it would be fine to re-borrow
+        // the files here as the cache as well. Replacing the errors with structured ones that get
+        // translated here would allow this.
+        let mut cache = files.clone();
         for e in errs {
             e.print(&mut cache)?;
         }
     } else {
-        for domain in domains {
-            println!("{:#?}", domain);
-        }
-        println!("{:#?}", problem.take());
+        println!("{:#?}", context);
     }
 
     Result::Ok(())
