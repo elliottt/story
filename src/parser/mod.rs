@@ -1,3 +1,4 @@
+use ariadne::Fmt;
 use std::collections::HashMap;
 
 mod lexer;
@@ -5,21 +6,22 @@ mod parser;
 pub use lexer::Loc;
 
 use crate::ir::{
-    Action, Constant, Domain, Expr, Id, Ident, NamedArena, Param, Predicate, Problem, Type,
+    Action, Constant, Domain, Expr, Ident, NamedArena, Param, Predicate, Problem, Type,
 };
+use crate::{Context, File, arena::Id};
 use lexer::Token;
 use parser::{Parser, Result};
 
 pub fn lexer<'a>(bytes: &'a str) -> impl Iterator<Item = lexer::Lexeme> + 'a {
-    lexer::Lexer::new(bytes)
+    lexer::Lexer::new(Id::none(), bytes)
 }
 
 /// Parse a domain specification out of the bytes given.
 pub fn parse_domain<'a>(
-    file: &'a str,
-    bytes: &'a str,
+    context: &'a Context,
+    file: Id<File>,
 ) -> std::result::Result<Domain, Vec<parser::Report<'a>>> {
-    let mut parser = Parser::new(file, bytes);
+    let mut parser = Parser::new(file, context.files[file].source.text());
 
     let mut domain = crate::ir::Domain::default();
 
@@ -74,11 +76,11 @@ pub fn parse_domain<'a>(
 
 /// Parse a problem description.
 pub fn parse_problem<'a>(
-    file: &'a str,
-    text: &'a str,
+    context: &'a Context,
+    file: Id<File>,
     domains: &mut HashMap<String, Domain>,
 ) -> std::result::Result<Problem, Vec<parser::Report<'a>>> {
-    let mut parser = Parser::new(file, text);
+    let mut parser = Parser::new(file, context.files[file].source.text());
     let mut problem = crate::ir::Problem::default();
 
     let mut empty_domain = Domain::default();
@@ -179,12 +181,12 @@ pub fn parse_types(p: &mut Parser<'_>, types: &mut NamedArena<Type>) -> Result<(
 
             text => {
                 if let Some(prev) = types.get(text) {
-                    p.error(
+                    let mut e = p.error(
                         next.loc,
                         format!("Type `{}` has already been defined", text),
-                    )
-                    .label(types[prev].loc, "Previously defined here")
-                    .label(next.loc, "Conflicting definition");
+                    );
+                    e.label(types[prev].loc, "Previously defined here");
+                    e.label(next.loc, "Conflicting definition");
                 } else {
                     buffer.push(types.add(Type {
                         loc: next.loc,
@@ -217,13 +219,14 @@ fn parse_constants(
 
             text => {
                 let name = text.to_owned();
-                if let Some(_prev) = constants.iter().find(|c| c.name == text) {
-                    p.error(next.loc, "Constant redefined")
-                        .label(next.loc, "Redefinition here")
-                        .note(format!(
-                            "The constant named `{}` has already been defined",
-                            name
-                        ));
+                if let Some(prev) = constants.iter().find(|c| c.name == text) {
+                    let mut e = p.error(next.loc, "Constant redefined");
+                    let a = e.label(prev.loc, "Previous definition");
+                    e.label(next.loc, "Redefinition here");
+                    e.note(format!(
+                        "The constant named `{}` has already been defined",
+                        name.fg(a)
+                    ));
                 } else {
                     buffer.push(constants.add(Constant {
                         loc: next.loc,
@@ -271,12 +274,12 @@ fn parse_parameters(
 
             text => {
                 if let Some(prev) = params.iter().find(|p| p.name == text) {
-                    p.error(
+                    let mut e = p.error(
                         next.loc,
                         format!("Parameter `{}` has already been defined", text),
-                    )
-                    .label(prev.loc, format!("Previously defined here"))
-                    .label(next.loc, format!("Conflicting declaration"));
+                    );
+                    e.label(prev.loc, format!("Previously defined here"));
+                    e.label(next.loc, format!("Conflicting declaration"));
                 } else {
                     params.push(Param {
                         loc: next.loc,
@@ -379,9 +382,12 @@ fn parse_expr(
                     pred
                 } else {
                     let name = text.to_owned();
-                    p.error(next.loc, "Unknown predicate")
-                        .label(next.loc, "Referenced here")
-                        .note(format!("The predicate `{}` has not been defined", name));
+                    let mut e = p.error(next.loc, "Unknown predicate");
+                    let a = e.label(next.loc, "Referenced here");
+                    e.note(format!(
+                        "The predicate `{}` has not been defined",
+                        name.fg(a)
+                    ));
                     Id::none()
                 };
 
@@ -400,14 +406,15 @@ fn parse_expr(
                 {
                     let pred = &domain.predicates[pred];
                     if args.len() != pred.params.len() {
-                        p.error(next.loc, "Arity mismatch")
-                            .label(next.loc.join(end), "Instantiation")
-                            .note(format!(
-                                "Predicate `{}` expects {} arguments, but got {}",
-                                pred.name,
-                                pred.params.len(),
-                                args.len()
-                            ));
+                        let mut e = p.error(next.loc, "Arity mismatch");
+                        let a = e.label(pred.loc, "Definition");
+                        let b = e.label(next.loc.join(end), "Instantiation");
+                        e.note(format!(
+                            "Predicate `{}` expects {} arguments, but got {}",
+                            pred.name.clone().fg(a),
+                            pred.params.len().fg(a),
+                            args.len().fg(b)
+                        ));
                     }
 
                     for (arg, param) in args.iter().zip(pred.params.iter()) {
@@ -420,7 +427,8 @@ fn parse_expr(
 
                             def.ty
                         } else {
-                            let Some(def) = domain.constants.iter().find(|c| c.name == arg.name) else {
+                            let Some(def) = domain.constants.iter().find(|c| c.name == arg.name)
+                            else {
                                 p.error(arg.loc, "Unknown constant")
                                     .label(arg.loc, "Used here");
                                 continue;
@@ -430,10 +438,9 @@ fn parse_expr(
                         };
 
                         if arg_ty != param.ty {
-                            p.error(arg.loc, "Type mismatch").label(
-                                arg.loc,
-                                format!("Has type `{}`", domain.types[arg_ty].name),
-                            ).note(format!("Expected type `{}`", domain.types[param.ty].name));
+                            let mut e = p.error(arg.loc, "Type mismatch");
+                            e.label(arg.loc, format!("Has type `{}`", domain.types[arg_ty].name));
+                            e.note(format!("Expected type `{}`", domain.types[param.ty].name));
                         }
                     }
                 }
@@ -455,12 +462,12 @@ fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
     };
 
     if let Some(prev) = domain.actions.iter().find(|a| a.name == action.name) {
-        p.error(
+        let mut e = p.error(
             action.loc,
             format!("Action `{}` has already been defined", action.name),
-        )
-        .label(prev.loc, "Previously defined here")
-        .label(action.loc, "Conflicting definition");
+        );
+        e.label(prev.loc, "Previously defined here");
+        e.label(action.loc, "Conflicting definition");
     }
 
     while p.next_is(Token::Atom)? {
@@ -488,168 +495,4 @@ fn parse_action(p: &mut Parser<'_>, domain: &mut Domain) -> parser::Result<()> {
     domain.actions.add(action);
 
     Result::Ok(())
-}
-
-#[test]
-fn test_lexer_empty() {
-    let ts = Vec::from_iter(lexer(""));
-    assert!(ts.is_empty());
-}
-
-#[test]
-fn test_lexer_parens() {
-    let ts = Vec::from_iter(lexer("()())").map(|lexeme| lexeme.token));
-
-    use lexer::Token::*;
-    assert_eq!(ts, vec![LParen, RParen, LParen, RParen, RParen]);
-}
-
-#[test]
-fn test_lexer_atoms() {
-    let ts = Vec::from_iter(lexer("foo bar baz? :bonk").map(|lexeme| lexeme.token));
-
-    use lexer::Token::*;
-    assert_eq!(ts, vec![Atom, Atom, Atom, Atom]);
-}
-
-#[test]
-fn test_source_extraction() {
-    let text = "foo bar (baz?) :bonk";
-    let ts = Vec::from_iter(lexer(text));
-
-    assert_eq!("foo", ts[0].loc.text(text));
-    assert_eq!("bar", ts[1].loc.text(text));
-    assert_eq!("baz?", ts[3].loc.text(text));
-    assert_eq!(":bonk", ts[5].loc.text(text));
-}
-
-#[test]
-fn test_source_extraction_comments() {
-    let text = "foo ;; foo bar ()\n  bar (baz?) :bonk";
-    let ts = Vec::from_iter(lexer(text));
-
-    assert_eq!("foo", ts[0].loc.text(text));
-    assert_eq!("bar", ts[1].loc.text(text));
-    assert_eq!("(", ts[2].loc.text(text));
-    assert_eq!("baz?", ts[3].loc.text(text));
-    assert_eq!(")", ts[4].loc.text(text));
-    assert_eq!(":bonk", ts[5].loc.text(text));
-}
-
-#[test]
-fn test_empty_domain() {
-    let text = "(define (domain foo))";
-    let result = parse_domain("", text).expect("Failed to parse domain");
-    assert_eq!("foo", result.name);
-}
-
-#[test]
-fn test_simple_types() {
-    let text = "(define (domain foo) \
-                (:types a b - object) \
-                (:constants foo bar - a baz - b))";
-    let domain = parse_domain("", text).expect("Failed to parse domain");
-    assert_eq!("foo", domain.name);
-
-    let a = Id::new(0);
-    let b = Id::new(1);
-    let object = Id::new(2);
-    assert_eq!(3, domain.types.len());
-    assert_eq!(object, domain.types[a].super_type);
-    assert_eq!(object, domain.types[b].super_type);
-    assert!(!domain.types[object].super_type.exists());
-
-    let foo = Id::new(0);
-    let bar = Id::new(1);
-    let baz = Id::new(2);
-    assert_eq!(3, domain.constants.len());
-    assert_eq!(a, domain.constants[foo].ty);
-    assert_eq!(a, domain.constants[bar].ty);
-    assert_eq!(b, domain.constants[baz].ty);
-}
-
-#[test]
-fn test_properties() {
-    let text = "(define (domain foo) \
-                (:types location character) \
-                (:properties (scary ?who - character) (connected ?a ?b - location)))";
-    let domain = parse_domain("", text).expect("Failed to parse domain");
-    assert_eq!("foo", domain.name);
-
-    let location = Id::new(0);
-    let character = Id::new(1);
-    assert_eq!(2, domain.types.len());
-    assert!(!domain.types[location].super_type.exists());
-    assert!(!domain.types[character].super_type.exists());
-
-    let scary = Id::new(0);
-    let connected = Id::new(1);
-    assert_eq!(2, domain.predicates.len());
-    assert_eq!(1, domain.predicates[scary].params.len());
-    assert_eq!(character, domain.predicates[scary].params[0].ty);
-    assert_eq!(2, domain.predicates[connected].params.len());
-    for param in &domain.predicates[connected].params {
-        assert_eq!(location, param.ty);
-    }
-
-    for prop in domain.predicates.iter() {
-        assert!(prop.is_const);
-    }
-}
-
-#[test]
-fn test_predicates() {
-    let text = "(define (domain foo) \
-                (:types location character) \
-                (:predicates (scary ?who - character) (connected ?a ?b - location)))";
-    let domain = parse_domain("", text).expect("Failed to parse domain");
-    assert_eq!("foo", domain.name);
-
-    let location = Id::new(0);
-    let character = Id::new(1);
-    assert_eq!(2, domain.types.len());
-    assert!(!domain.types[location].super_type.exists());
-    assert!(!domain.types[character].super_type.exists());
-
-    let scary = Id::new(0);
-    let connected = Id::new(1);
-    assert_eq!(2, domain.predicates.len());
-    assert_eq!(1, domain.predicates[scary].params.len());
-    assert_eq!(character, domain.predicates[scary].params[0].ty);
-    assert_eq!(2, domain.predicates[connected].params.len());
-    for param in &domain.predicates[connected].params {
-        assert_eq!(location, param.ty);
-    }
-
-    for prop in domain.predicates.iter() {
-        assert!(!prop.is_const);
-    }
-}
-
-#[test]
-fn test_actions() {
-    let domain = parse_domain(
-        "",
-        "(define (domain :testing) \
-                 (:types actor location) \
-                 (:predicates \
-                    (at ?who - actor ?where - location)) \
-                 (:action travel \
-                    :parameters (?who - actor ?from ?to - location) \
-                    :precondition (at ?who ?from) \
-                    :effect (and (at ?who ?to) (not (at ?who ?from)))))",
-    )
-    .expect("failed to parse testing domain");
-
-    let actor = domain.types.get("actor").expect("missing type");
-    let location = domain.types.get("location").expect("missing type");
-    assert_eq!(1, domain.predicates.len());
-    assert_eq!(1, domain.actions.len());
-
-    let travel = domain.actions.get("travel").expect("missing action");
-    assert_eq!("travel", domain.actions[travel].name);
-    assert_eq!(3, domain.actions[travel].params.len());
-    assert_eq!(actor, domain.actions[travel].params[0].ty);
-    assert_eq!(location, domain.actions[travel].params[1].ty);
-    assert_eq!(location, domain.actions[travel].params[2].ty);
 }

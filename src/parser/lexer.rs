@@ -1,4 +1,7 @@
 use std::u32;
+use ariadne::Span;
+
+use crate::{File, arena::Id};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Token {
@@ -9,17 +12,19 @@ pub enum Token {
 
 #[derive(Clone, Copy, Debug)]
 pub struct Loc {
+    pub file: Id<File>,
     pub start: u32,
     pub end: u32,
 }
 
 impl Loc {
-    pub fn new(start: u32, end: u32) -> Self {
-        Loc { start, end }
+    pub fn new(file: Id<File>, start: u32, end: u32) -> Self {
+        Loc { file, start, end }
     }
 
     pub fn none() -> Self {
         Loc {
+            file: Id::none(),
             start: u32::MAX,
             end: u32::MAX,
         }
@@ -28,10 +33,11 @@ impl Loc {
     pub fn join(&self, other: Self) -> Self {
         if !self.exists() {
             other
-        } else if !other.exists() {
+        } else if !other.exists() || self.file != other.file {
             self.clone()
         } else {
             Loc {
+                file: self.file,
                 start: self.start.min(other.start),
                 end: self.end.max(other.end),
             }
@@ -46,9 +52,9 @@ impl Loc {
         self.start != u32::MAX
     }
 
-    pub fn end(text: &str) -> Self {
+    pub fn end(file: Id<File>, text: &str) -> Self {
         let start = text.len().try_into().unwrap();
-        Loc { start, end: start }
+        Loc { file, start, end: start }
     }
 
     /// Only meant to be used with the same source that the [`Loc`] was created from.
@@ -57,6 +63,22 @@ impl Loc {
         let end: usize = self.end.try_into().unwrap();
         let bytes = &text.as_bytes()[start..end];
         unsafe { std::str::from_utf8_unchecked(bytes) }
+    }
+}
+
+impl Span for Loc {
+    type SourceId = Id<File>;
+
+    fn source(&self) -> &Self::SourceId {
+        &self.file
+    }
+
+    fn start(&self) -> usize {
+        self.start.try_into().unwrap()
+    }
+
+    fn end(&self) -> usize {
+        self.end.try_into().unwrap()
     }
 }
 
@@ -74,13 +96,15 @@ impl Lexeme {
 
 pub(crate) struct Lexer<'a> {
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
+    file: Id<File>,
     text: &'a str,
 }
 
 impl<'a> Lexer<'a> {
-    pub(crate) fn new(text: &'a str) -> Self {
+    pub(crate) fn new(file: Id<File>, text: &'a str) -> Self {
         Self {
             chars: text.char_indices().peekable(),
+            file,
             text,
         }
     }
@@ -104,7 +128,7 @@ impl<'a> Lexer<'a> {
     fn emit(&mut self, token: Token, start: usize) -> Option<Lexeme> {
         let start: u32 = start.try_into().unwrap();
         let end: u32 = self.position().try_into().unwrap();
-        Some(Lexeme::new(token, Loc::new(start, end)))
+        Some(Lexeme::new(token, Loc::new(self.file, start, end)))
     }
 
     fn skip_space_and_comments(&mut self) {

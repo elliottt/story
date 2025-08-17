@@ -1,11 +1,12 @@
-use ariadne::{ColorGenerator, Label, ReportKind};
+use ariadne::{Color, ColorGenerator, Label, ReportKind};
 
 use super::lexer;
+use crate::{File, arena::Id};
 
 pub(crate) type Result<T> = std::result::Result<T, ()>;
 
-pub type Report<'a> = ariadne::Report<'a, (&'a str, std::ops::Range<usize>)>;
-pub type ReportBuilder<'a> = ariadne::ReportBuilder<'a, (&'a str, std::ops::Range<usize>)>;
+pub type Report<'a> = ariadne::Report<'a, lexer::Loc>;
+pub type ReportBuilder<'a> = ariadne::ReportBuilder<'a, lexer::Loc>;
 
 pub struct ErrorBuilder<'p, 'a> {
     parser: &'p mut Parser<'a>,
@@ -22,8 +23,7 @@ impl Drop for ErrorBuilder<'_, '_> {
 
 impl<'p, 'a> ErrorBuilder<'p, 'a> {
     pub fn new(parser: &'p mut Parser<'a>, loc: lexer::Loc, message: impl ToString) -> Self {
-        let builder =
-            Report::build(ReportKind::Error, (parser.file, loc.range())).with_message(message);
+        let builder = Report::build(ReportKind::Error, loc).with_message(message);
         Self {
             parser,
             builder: Some(builder),
@@ -31,15 +31,12 @@ impl<'p, 'a> ErrorBuilder<'p, 'a> {
         }
     }
 
-    pub fn label(&mut self, loc: lexer::Loc, message: impl ToString) -> &mut Self {
+    pub fn label(&mut self, loc: lexer::Loc, message: impl ToString) -> Color {
+        let color = self.colors.next();
         if let Some(builder) = self.builder.as_mut() {
-            builder.add_label(
-                Label::new((self.parser.file, loc.range()))
-                    .with_message(message)
-                    .with_color(self.colors.next()),
-            )
+            builder.add_label(Label::new(loc).with_message(message).with_color(color))
         }
-        self
+        color
     }
 
     pub fn note(&mut self, message: impl ToString) -> &mut Self {
@@ -52,15 +49,15 @@ impl<'p, 'a> ErrorBuilder<'p, 'a> {
 
 pub struct Parser<'a> {
     lexer: std::iter::Peekable<lexer::Lexer<'a>>,
-    file: &'a str,
+    file: Id<File>,
     text: &'a str,
     errors: Vec<Report<'a>>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(file: &'a str, text: &'a str) -> Self {
+    pub fn new(file: Id<File>, text: &'a str) -> Self {
         Parser {
-            lexer: lexer::Lexer::new(text).peekable(),
+            lexer: lexer::Lexer::new(file, text).peekable(),
             file,
             text,
             errors: Vec::new(),
@@ -109,7 +106,7 @@ impl<'a> Parser<'a> {
         match self.lexer.peek() {
             Some(lex) => Result::Ok(lex.clone()),
             None => self.parse_error(
-                lexer::Loc::end(self.text),
+                lexer::Loc::end(self.file, self.text),
                 "Unexpected end of input".to_owned(),
             ),
         }
@@ -119,7 +116,7 @@ impl<'a> Parser<'a> {
         match self.lexer.next() {
             Some(lex) => Result::Ok(lex),
             None => self.parse_error(
-                lexer::Loc::end(self.text),
+                lexer::Loc::end(self.file, self.text),
                 "Unexpected end of input".to_owned(),
             ),
         }
@@ -134,7 +131,7 @@ impl<'a> Parser<'a> {
         let next = self.consume()?;
         if next.token != token {
             return self.parse_error(
-                lexer::Loc::end(self.text),
+                lexer::Loc::end(self.file, self.text),
                 format!("Unexpected: {}", self.text(next.loc)),
             );
         }
@@ -177,9 +174,9 @@ impl<'a> Parser<'a> {
         let res = body(self)?;
         let end = self.consume()?;
         if end.token != lexer::Token::RParen {
-            self.error(end.loc, "Parse error")
-                .label(start.loc, "Opening paren here")
-                .label(end.loc, "Expected a `)`");
+            let mut e = self.error(end.loc, "Parse error");
+            e.label(start.loc, "Opening paren here");
+            e.label(end.loc, "Expected a `)`");
             return Result::Err(());
         }
         Result::Ok(res)

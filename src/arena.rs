@@ -5,6 +5,13 @@ pub struct Id<T: 'static> {
     _elem: std::marker::PhantomData<T>,
 }
 
+impl<T> std::hash::Hash for Id<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.index.hash(state);
+        self._elem.hash(state);
+    }
+}
+
 impl<T> Default for Id<T> {
     fn default() -> Self {
         Self::none()
@@ -61,7 +68,7 @@ impl<T> Clone for Id<T> {
 
 impl<T> Copy for Id<T> {}
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Arena<T> {
     elems: Vec<T>,
 }
@@ -110,7 +117,7 @@ impl<T> Default for Arena<T> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NamedArena<T: 'static> {
     elems: Arena<T>,
     names: HashMap<String, Id<T>>,
