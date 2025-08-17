@@ -2,29 +2,10 @@ use ariadne::{ColorGenerator, Label, ReportKind};
 
 use super::lexer;
 
-pub(crate) type Result<T> = std::result::Result<T, Error>;
-
-#[derive(Debug)]
-pub struct Error {
-    loc: lexer::Loc,
-    message: String,
-}
+pub(crate) type Result<T> = std::result::Result<T, ()>;
 
 pub type Report<'a> = ariadne::Report<'a, (&'a str, std::ops::Range<usize>)>;
 pub type ReportBuilder<'a> = ariadne::ReportBuilder<'a, (&'a str, std::ops::Range<usize>)>;
-
-impl Error {
-    pub fn new(loc: lexer::Loc, message: String) -> Self {
-        Error { loc, message }
-    }
-
-    pub fn report<'a>(self, file: &'a str) -> Report<'a> {
-        Report::build(ReportKind::Error, (file, self.loc.range()))
-            .with_label(Label::new((file, self.loc.range())))
-            .with_message(self.message)
-            .finish()
-    }
-}
 
 pub struct ErrorBuilder<'p, 'a> {
     parser: &'p mut Parser<'a>,
@@ -40,8 +21,9 @@ impl Drop for ErrorBuilder<'_, '_> {
 }
 
 impl<'p, 'a> ErrorBuilder<'p, 'a> {
-    pub fn new(parser: &'p mut Parser<'a>, loc: lexer::Loc) -> Self {
-        let builder = Report::build(ReportKind::Error, (parser.file, loc.range()));
+    pub fn new(parser: &'p mut Parser<'a>, loc: lexer::Loc, message: impl ToString) -> Self {
+        let builder =
+            Report::build(ReportKind::Error, (parser.file, loc.range())).with_message(message);
         Self {
             parser,
             builder: Some(builder),
@@ -49,13 +31,20 @@ impl<'p, 'a> ErrorBuilder<'p, 'a> {
         }
     }
 
-    pub fn label(&mut self, loc: lexer::Loc, message: String) -> &mut Self {
+    pub fn label(&mut self, loc: lexer::Loc, message: impl ToString) -> &mut Self {
         if let Some(builder) = self.builder.as_mut() {
             builder.add_label(
                 Label::new((self.parser.file, loc.range()))
                     .with_message(message)
                     .with_color(self.colors.next()),
             )
+        }
+        self
+    }
+
+    pub fn note(&mut self, message: impl ToString) -> &mut Self {
+        if let Some(builder) = self.builder.as_mut() {
+            builder.add_note(message)
         }
         self
     }
@@ -82,24 +71,27 @@ impl<'a> Parser<'a> {
         self.errors
     }
 
-    pub fn error<'p>(&'p mut self, loc: lexer::Loc, message: String) -> ErrorBuilder<'p, 'a> {
-        let mut builder = ErrorBuilder::new(self, loc);
-        builder.label(loc, message);
-        builder
+    pub fn error<'p>(
+        &'p mut self,
+        loc: lexer::Loc,
+        message: impl ToString,
+    ) -> ErrorBuilder<'p, 'a> {
+        ErrorBuilder::new(self, loc, message)
     }
 
-    pub fn parse_error<T>(&self, loc: lexer::Loc, message: String) -> Result<T> {
-        Result::Err(Error::new(loc, message))
+    pub fn parse_error<T>(&mut self, loc: lexer::Loc, message: impl ToString) -> Result<T> {
+        self.error(loc, "Parse error").label(loc, message);
+        Result::Err(())
     }
 
-    fn expected<T>(&self, loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
+    fn expected<T>(&mut self, loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
         self.parse_error(
             loc,
             format!("Expected `{}`, but found `{}` instead", expected, found),
         )
     }
 
-    fn expected_atom<T>(&self, loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
+    fn expected_atom<T>(&mut self, loc: lexer::Loc, expected: &str, found: &str) -> Result<T> {
         self.parse_error(
             loc,
             format!(
@@ -149,24 +141,6 @@ impl<'a> Parser<'a> {
         Result::Ok(next)
     }
 
-    pub fn lparen(&mut self) -> Result<()> {
-        let next = self.consume()?;
-        if next.token != lexer::Token::LParen {
-            return self.expected(next.loc, "(", next.loc.text(self.text));
-        }
-
-        Result::Ok(())
-    }
-
-    pub fn rparen(&mut self) -> Result<()> {
-        let next = self.consume()?;
-        if next.token != lexer::Token::RParen {
-            return self.expected(next.loc, ")", next.loc.text(self.text));
-        }
-
-        Result::Ok(())
-    }
-
     pub fn token(&mut self, token: lexer::Token) -> Result<lexer::Lexeme> {
         let next = self.consume()?;
         if next.token != token {
@@ -194,9 +168,20 @@ impl<'a> Parser<'a> {
     }
 
     pub fn list<T>(&mut self, body: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
-        self.lparen()?;
+        let start = self.consume()?;
+        if start.token != lexer::Token::LParen {
+            self.error(start.loc, "Parse error")
+                .label(start.loc, "Expected a `(`");
+            return Result::Err(());
+        }
         let res = body(self)?;
-        self.rparen()?;
+        let end = self.consume()?;
+        if end.token != lexer::Token::RParen {
+            self.error(end.loc, "Parse error")
+                .label(start.loc, "Opening paren here")
+                .label(end.loc, "Expected a `)`");
+            return Result::Err(());
+        }
         Result::Ok(res)
     }
 }

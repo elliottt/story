@@ -1,5 +1,4 @@
-mod arena;
-pub use arena::{Arena, Id, Named, NamedArena};
+pub use crate::arena::{Arena, Id, Named, NamedArena};
 
 #[derive(Default, Debug)]
 pub struct Domain {
@@ -11,7 +10,13 @@ pub struct Domain {
     pub actions: NamedArena<Action>,
 }
 
-pub struct Problem {}
+#[derive(Default, Debug)]
+pub struct Problem {
+    pub name: String,
+    pub domain: String,
+    pub init: Vec<Id<Expr>>,
+    pub goal: Id<Expr>,
+}
 
 #[derive(Debug)]
 pub struct Type {

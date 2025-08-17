@@ -1,8 +1,14 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 pub struct Id<T: 'static> {
     index: u32,
     _elem: std::marker::PhantomData<T>,
+}
+
+impl<T> Default for Id<T> {
+    fn default() -> Self {
+        Self::none()
+    }
 }
 
 impl<T> Id<T> {

@@ -25,6 +25,19 @@ impl Loc {
         }
     }
 
+    pub fn join(&self, other: Self) -> Self {
+        if !self.exists() {
+            other
+        } else if !other.exists() {
+            self.clone()
+        } else {
+            Loc {
+                start: self.start.min(other.start),
+                end: self.end.max(other.end),
+            }
+        }
+    }
+
     pub fn range(&self) -> std::ops::Range<usize> {
         self.start.try_into().unwrap()..self.end.try_into().unwrap()
     }

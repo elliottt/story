@@ -1,2 +1,3 @@
-pub mod parser;
+pub mod arena;
 pub mod ir;
+pub mod parser;
