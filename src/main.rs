@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use story::{File, Files, ir::Context, parser};
+use story::{File, Files, ground, ir::Context, parser};
 
 #[derive(Parser, Debug)]
 #[command()]
@@ -44,6 +44,7 @@ fn main() -> anyhow::Result<()> {
             e.print(&mut cache)?;
         }
     } else {
+        ground(&mut context);
         println!("{:#?}", context);
     }
 

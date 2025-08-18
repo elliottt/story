@@ -157,6 +157,11 @@ impl<T: Named> NamedArena<T> {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.elems.iter_mut()
     }
+
+    pub fn ids(&self) -> impl Iterator<Item = Id<T>> {
+        self.names.values().copied()
+    }
+
 }
 
 impl<T> std::ops::Index<Id<T>> for NamedArena<T> {

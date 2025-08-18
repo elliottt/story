@@ -363,10 +363,12 @@ fn parse_expr(
                 Result::Ok(context.exprs.add(Expr::Or { exprs }))
             }
 
+            // Desugar `(when p q)` as `(or (not p) q)`
             "when" => {
                 let pred = parse_expr(p, context, params)?;
                 let cons = parse_expr(p, context, params)?;
-                Result::Ok(context.exprs.add(Expr::When { pred, cons }))
+                let exprs = vec![context.exprs.add(Expr::Not { arg: pred }), cons];
+                Result::Ok(context.exprs.add(Expr::Or { exprs }))
             }
 
             text => {

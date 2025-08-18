@@ -92,11 +92,6 @@ pub enum Expr {
     Or {
         exprs: Vec<Id<Expr>>,
     },
-
-    When {
-        pred: Id<Expr>,
-        cons: Id<Expr>,
-    },
 }
 
 #[derive(Clone, Debug)]
