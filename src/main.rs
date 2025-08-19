@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use story::{File, Files, ground, ir::Context, parser};
+use story::{File, Files, ground, ir::Context, parser, print_context};
 
 #[derive(Parser, Debug)]
 #[command()]
@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         }
     } else {
         ground(&mut context);
-        println!("{:#?}", context);
+        println!("{}", print_context(&context));
     }
 
     Result::Ok(())

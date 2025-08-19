@@ -4,6 +4,11 @@ use crate::{
 };
 
 pub fn ground(context: &mut Context) {
+    nnf_context(context);
+}
+
+/// Put all referenced expressions in [`Context`] into negation normal form.
+fn nnf_context(context: &mut Context) {
     let mut actions = std::mem::take(&mut context.actions);
     for action in actions.iter_mut() {
         nnf_action(context, action)
@@ -11,7 +16,7 @@ pub fn ground(context: &mut Context) {
     context.actions = actions;
 
     let mut init = std::mem::take(&mut context.init);
-    for expr in init.iter_mut(){
+    for expr in init.iter_mut() {
         *expr = nnf_expr(context, *expr);
     }
     context.init = init;
@@ -27,10 +32,7 @@ fn nnf_action(context: &mut Context, action: &mut Action) {
 
 fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
     match &mut context.exprs[id] {
-        &mut Expr::Not { arg } => {
-            let narg = negate_expr(context, arg);
-            if narg == arg { id } else { narg }
-        }
+        &mut Expr::Not { arg } => negate_expr(context, arg),
 
         // There's nothing to be done for an instantiation, or equality.
         Expr::Inst { .. } | Expr::Eq { .. } => id,
@@ -54,11 +56,11 @@ fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
     }
 }
 
-/// Negate an expression, returning the same id if it wasn't possible to push the negation down.
+/// Negate an expression.
 fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
     match &context.exprs[id] {
         // We can't push negation down any further here.
-        Expr::Inst { .. } | Expr::Eq { .. } => id,
+        Expr::Inst { .. } | Expr::Eq { .. } => context.exprs.add(Expr::Not { arg: id }),
 
         // Double-negation elimination
         &Expr::Not { arg } => negate_expr(context, arg),
