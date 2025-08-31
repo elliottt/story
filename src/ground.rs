@@ -27,7 +27,7 @@ fn nnf_context(context: &mut Context) {
 /// Put an [`Action`] into negation normal form.
 fn nnf_action(context: &mut Context, action: &mut Action) {
     action.precond = nnf_expr(context, action.precond);
-    action.effect = nnf_expr(context, action.effect);
+    // action.effect = nnf_expr(context, action.effect);
 }
 
 fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {

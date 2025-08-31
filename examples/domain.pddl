@@ -49,6 +49,6 @@
            (scary ?actor))
 
     :effect
-      (and (imply (frail ?target) (not (alive ?target)))
+      (and (when (frail ?target) (not (alive ?target)))
            (scared ?target)))
 )

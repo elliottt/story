@@ -6,6 +6,7 @@ pub struct Context {
     pub problem_name: Ident,
     pub constants: Arena<Constant>,
     pub exprs: Arena<Expr>,
+    pub effects: Arena<Effect>,
     pub types: NamedArena<Type>,
     pub predicates: NamedArena<Predicate>,
     pub actions: NamedArena<Action>,
@@ -95,12 +96,33 @@ pub enum Expr {
 }
 
 #[derive(Clone, Debug)]
+pub enum Effect {
+    Inst {
+        pred: Id<Predicate>,
+        args: Vec<Ident>,
+    },
+
+    When {
+        cond: Id<Expr>,
+        effect: Id<Effect>,
+    },
+
+    Not {
+        arg: Id<Effect>,
+    },
+
+    And {
+        effects: Vec<Id<Effect>>,
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Action {
     pub loc: crate::parser::Loc,
     pub name: String,
     pub params: Vec<Param>,
     pub precond: Id<Expr>,
-    pub effect: Id<Expr>,
+    pub effect: Id<Effect>,
 }
 
 impl Named for Action {

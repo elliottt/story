@@ -7,7 +7,7 @@ pub use lexer::Loc;
 use crate::{
     File, Files,
     arena::Id,
-    ir::{Action, Constant, Context, Expr, Ident, NamedArena, Param, Predicate, Type},
+    ir::{Action, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate, Type},
 };
 use lexer::Token;
 use parser::{Parser, Result};
@@ -333,6 +333,91 @@ fn parse_expr_list(
     parser::Result::Ok(result)
 }
 
+// Parse and validate an instantiation of `pred`.
+fn parse_inst(
+    p: &mut Parser<'_>,
+    context: &mut Context,
+    params: &[Param],
+    next: lexer::Lexeme,
+) -> parser::Result<Option<(Id<Predicate>, Vec<Ident>)>> {
+    let text = p.text(next.loc);
+    let pred = if let Some(pred) = context.predicates.get(text) {
+        pred
+    } else {
+        let name = text.to_owned();
+        let mut e = p.error(next.loc, "Unknown predicate");
+        let a = e.label(next.loc, "Referenced here");
+        e.note(format!(
+            "The predicate `{}` has not been defined",
+            name.fg(a)
+        ));
+        Id::none()
+    };
+
+    let mut end = next.loc;
+    let mut args = Vec::new();
+    while p.next_is(Token::Atom)? {
+        let ident = parse_ident(p)?;
+        end = ident.loc;
+        args.push(ident);
+    }
+
+    if !pred.exists() {
+        return Result::Ok(None);
+    }
+
+    {
+        let pred = &context.predicates[pred];
+        if args.len() != pred.params.len() {
+            let mut e = p.error(next.loc, "Arity mismatch");
+            let a = e.label(pred.loc, "Definition");
+            let b = e.label(next.loc.join(end), "Instantiation");
+            e.note(format!(
+                "Predicate `{}` expects {} arguments, but got {}",
+                pred.name.clone().fg(a),
+                pred.params.len().fg(a),
+                args.len().fg(b)
+            ));
+        }
+
+        for (arg, param) in args.iter().zip(pred.params.iter()) {
+            let arg_ty = if arg.name.starts_with('?') {
+                let Some(def) = params.iter().find(|p| p.name == arg.name) else {
+                    p.error(arg.loc, "Unknown param")
+                        .label(arg.loc, "Used here");
+                    continue;
+                };
+
+                def.ty
+            } else {
+                let Some(def) = context.constants.iter().find(|c| c.name == arg.name) else {
+                    p.error(arg.loc, "Unknown constant")
+                        .label(arg.loc, "Used here");
+                    continue;
+                };
+
+                def.ty
+            };
+
+            if arg_ty.exists() && param.ty.exists() && arg_ty != param.ty {
+                let mut e = p.error(arg.loc, "Type mismatch");
+                let a = e.next_color();
+                let b = e.next_color();
+                let expected_ty = context.types[param.ty].name.clone().fg(a);
+                let actual_ty = context.types[arg_ty].name.clone().fg(b);
+                e.label_with_color(param.loc, a, format!("Has type `{}`", expected_ty));
+                e.label_with_color(arg.loc, b, format!("Has type `{}`", actual_ty));
+                e.note(format!(
+                    "Expected type `{}`, but found type `{}`",
+                    expected_ty, actual_ty,
+                ));
+            }
+        }
+    }
+
+    Result::Ok(Some((pred, args)))
+}
+
 fn parse_expr(
     p: &mut Parser<'_>,
     context: &mut Context,
@@ -371,83 +456,47 @@ fn parse_expr(
                 Result::Ok(context.exprs.add(Expr::Or { exprs }))
             }
 
-            text => {
-                let pred = if let Some(pred) = context.predicates.get(text) {
-                    pred
+            _ => {
+                if let Some((pred, args)) = parse_inst(p, context, params, next)? {
+                    Result::Ok(context.exprs.add(Expr::Inst { pred, args }))
                 } else {
-                    let name = text.to_owned();
-                    let mut e = p.error(next.loc, "Unknown predicate");
-                    let a = e.label(next.loc, "Referenced here");
-                    e.note(format!(
-                        "The predicate `{}` has not been defined",
-                        name.fg(a)
-                    ));
-                    Id::none()
-                };
-
-                let mut end = next.loc;
-                let mut args = Vec::new();
-                while p.next_is(Token::Atom)? {
-                    let ident = parse_ident(p)?;
-                    end = ident.loc;
-                    args.push(ident);
+                    Result::Ok(Id::none())
                 }
+            }
+        }
+    })
+}
 
-                if !pred.exists() {
-                    return Result::Ok(Id::none());
+fn parse_effect(
+    p: &mut Parser<'_>,
+    context: &mut Context,
+    params: &[Param],
+) -> parser::Result<Id<Effect>> {
+    p.list(|p| {
+        let next = p.expect(Token::Atom)?;
+        match p.text(next.loc) {
+            "when" => {
+                let cond = parse_expr(p, context, params)?;
+                let effect = parse_effect(p, context, params)?;
+                Result::Ok(context.effects.add(Effect::When { cond, effect }))
+            }
+            "not" => {
+                let arg = parse_effect(p, context, params)?;
+                Result::Ok(context.effects.add(Effect::Not { arg }))
+            }
+            "and" => {
+                let mut effects = Vec::new();
+                while p.next_is(Token::LParen)? {
+                    effects.push(parse_effect(p, context, params)?);
                 }
-
-                {
-                    let pred = &context.predicates[pred];
-                    if args.len() != pred.params.len() {
-                        let mut e = p.error(next.loc, "Arity mismatch");
-                        let a = e.label(pred.loc, "Definition");
-                        let b = e.label(next.loc.join(end), "Instantiation");
-                        e.note(format!(
-                            "Predicate `{}` expects {} arguments, but got {}",
-                            pred.name.clone().fg(a),
-                            pred.params.len().fg(a),
-                            args.len().fg(b)
-                        ));
-                    }
-
-                    for (arg, param) in args.iter().zip(pred.params.iter()) {
-                        let arg_ty = if arg.name.starts_with('?') {
-                            let Some(def) = params.iter().find(|p| p.name == arg.name) else {
-                                p.error(arg.loc, "Unknown param")
-                                    .label(arg.loc, "Used here");
-                                continue;
-                            };
-
-                            def.ty
-                        } else {
-                            let Some(def) = context.constants.iter().find(|c| c.name == arg.name)
-                            else {
-                                p.error(arg.loc, "Unknown constant")
-                                    .label(arg.loc, "Used here");
-                                continue;
-                            };
-
-                            def.ty
-                        };
-
-                        if arg_ty.exists() && param.ty.exists() && arg_ty != param.ty {
-                            let mut e = p.error(arg.loc, "Type mismatch");
-                            let a = e.next_color();
-                            let b = e.next_color();
-                            let expected_ty = context.types[param.ty].name.clone().fg(a);
-                            let actual_ty = context.types[arg_ty].name.clone().fg(b);
-                            e.label_with_color(param.loc, a, format!("Has type `{}`", expected_ty));
-                            e.label_with_color(arg.loc, b, format!("Has type `{}`", actual_ty));
-                            e.note(format!(
-                                "Expected type `{}`, but found type `{}`",
-                                expected_ty, actual_ty,
-                            ));
-                        }
-                    }
+                Result::Ok(context.effects.add(Effect::And { effects }))
+            }
+            _ => {
+                if let Some((pred, args)) = parse_inst(p, context, params, next)? {
+                    Result::Ok(context.effects.add(Effect::Inst { pred, args }))
+                } else {
+                    Result::Ok(Id::none())
                 }
-
-                Result::Ok(context.exprs.add(Expr::Inst { pred, args }))
             }
         }
     })
@@ -482,7 +531,7 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
             }
 
             ":effect" => {
-                action.effect = parse_expr(p, context, &action.params)?;
+                action.effect = parse_effect(p, context, &action.params)?;
             }
 
             _ => {
