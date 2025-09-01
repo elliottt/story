@@ -1,10 +1,55 @@
 use crate::{
     arena::Id,
-    ir::{Action, Context, Expr},
+    ir::{Action, Arena, Context, Effect, Expr, NamedArena, Predicate},
 };
 
 pub fn ground(context: &mut Context) {
+    // Determine constant predicates by determining which ones don't show up in action effects.
+    determine_const_predicates(context);
+
     nnf_context(context);
+}
+
+fn determine_const_predicates(context: &mut Context) {
+    // Mark everything as constant, so that we can mark it as non-const when traversing effects.
+    for pred in context.predicates.iter_mut() {
+        pred.is_const = true;
+    }
+
+    for action in context.actions.iter() {
+        used_effect_preds(
+            &mut context.predicates,
+            &context.exprs,
+            &context.effects,
+            action.effect,
+        );
+    }
+}
+
+fn used_effect_preds(
+    predicates: &mut NamedArena<Predicate>,
+    exprs: &Arena<Expr>,
+    effects: &Arena<Effect>,
+    effect: Id<Effect>,
+) {
+    match &effects[effect] {
+        Effect::Inst { pred, .. } => {
+            predicates[*pred].is_const = false;
+        }
+        // NOTE: we ignore the condition in a `when` clause, as it is treated as a secondary
+        // precondition of the action.
+        Effect::When { effect, .. } => {
+            used_effect_preds(predicates, exprs, effects, *effect);
+        }
+        Effect::Not { arg } => {
+            used_effect_preds(predicates, exprs, effects, *arg);
+        }
+        Effect::And { effects: es } => {
+            for eff in es.iter().copied() {
+                used_effect_preds(predicates, exprs, effects, eff);
+            }
+        }
+    }
 }
 
 /// Put all referenced expressions in [`Context`] into negation normal form.

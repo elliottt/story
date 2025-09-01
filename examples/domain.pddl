@@ -9,13 +9,10 @@
     none minor major vast - magnitude
   )
 
-  (:properties
+  (:predicates
     (scary ?x - character)
     (connected ?from ?to - location)
     (frail ?x - character)
-  )
-
-  (:predicates
     (alive ?who - character)
     (injured ?who - character)
     (conscious ?who - character)

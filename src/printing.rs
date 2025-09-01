@@ -14,10 +14,7 @@ pub fn print_context(context: &Context) -> String {
     }
 
     for e in context.exprs.iter() {
-        doc = doc.append(BoxDoc::concat([
-            e.to_doc(context),
-            BoxDoc::hardline(),
-        ]));
+        doc = doc.append(BoxDoc::concat([e.to_doc(context), BoxDoc::hardline()]));
     }
 
     let mut w = Vec::new();

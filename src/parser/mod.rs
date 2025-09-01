@@ -39,11 +39,8 @@ pub fn parse_domain<'a>(
                 match p.text(case.loc) {
                     ":types" => parse_types(p, &mut context.types)?,
                     ":constants" => parse_constants(p, context)?,
-                    ":properties" => {
-                        parse_predicates(p, &context.types, &mut context.predicates, true)?
-                    }
                     ":predicates" => {
-                        parse_predicates(p, &context.types, &mut context.predicates, false)?
+                        parse_predicates(p, &context.types, &mut context.predicates)?
                     }
 
                     ":action" => parse_action(p, context)?,
@@ -290,7 +287,6 @@ fn parse_predicates(
     p: &mut Parser<'_>,
     types: &NamedArena<Type>,
     predicates: &mut NamedArena<Predicate>,
-    is_const: bool,
 ) -> parser::Result<()> {
     while p.peek()?.token == Token::LParen {
         p.list(|p| {
@@ -299,7 +295,7 @@ fn parse_predicates(
                 loc: next.loc,
                 name: p.text(next.loc).to_owned(),
                 params: Vec::new(),
-                is_const,
+                is_const: false,
             };
 
             parse_parameters(p, types, &mut prop.params)?;

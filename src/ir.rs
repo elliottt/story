@@ -47,9 +47,7 @@ pub struct Param {
     pub ty: Id<Type>,
 }
 
-/// Predicates are assertions about the world state. They can be marked `const`, in which case they
-/// can never change, and can instead be used to prune the space of available actions during
-/// grounding.
+/// Predicates are assertions about the world state.
 #[derive(Clone, Debug)]
 pub struct Predicate {
     pub loc: crate::parser::Loc,
