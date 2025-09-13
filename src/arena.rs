@@ -99,6 +99,10 @@ impl<T> Arena<T> {
     pub fn len(&self) -> usize {
         self.elems.len()
     }
+
+    pub fn into_inner(self) -> Vec<T> {
+        self.elems
+    }
 }
 
 impl<T> std::ops::Index<Id<T>> for Arena<T> {
@@ -152,6 +156,10 @@ impl<T: Named> NamedArena<T> {
 
     pub fn get(&self, name: &str) -> Option<Id<T>> {
         self.names.get(name).copied()
+    }
+
+    pub fn into_inner(self) -> Vec<T> {
+        self.elems.into_inner()
     }
 
     pub fn drain(&mut self) -> impl Iterator<Item = T> {

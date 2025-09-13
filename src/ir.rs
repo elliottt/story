@@ -14,6 +14,38 @@ pub struct Context {
     pub goal: Id<Expr>,
 }
 
+pub trait And: Sized {
+    fn and(c: &mut Context, es: impl IntoIterator<Item = Id<Self>>) -> Id<Self>;
+}
+
+impl And for Expr {
+    fn and(c: &mut Context, es: impl IntoIterator<Item = Id<Self>>) -> Id<Self> {
+        let mut conjuncts = Vec::new();
+        for e in es.into_iter() {
+            if let Expr::And { exprs } = &c.exprs[e] {
+                conjuncts.extend(exprs.iter().copied());
+            } else {
+                conjuncts.push(e);
+            }
+        }
+        c.exprs.add(Expr::And { exprs: conjuncts })
+    }
+}
+
+impl And for Effect {
+    fn and(c: &mut Context, es: impl IntoIterator<Item = Id<Self>>) -> Id<Self> {
+        let mut conjuncts = Vec::new();
+        for e in es.into_iter() {
+            if let Effect::And { effects } = &c.effects[e] {
+                conjuncts.extend(effects.iter().copied());
+            } else {
+                conjuncts.push(e);
+            }
+        }
+        c.effects.add(Effect::And { effects: conjuncts })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Type {
     pub loc: crate::parser::Loc,
@@ -108,6 +140,23 @@ pub enum Effect {
 
     And {
         effects: Vec<Id<Effect>>,
+    },
+
+    // NOTE: This would probably be better to reserve in the effect arena and have a canonical
+    // value instead of making it show up all over the place, but it's also a really convenient
+    // default.
+    True,
+}
+
+impl Effect {
+    pub fn is_true(&self) -> bool {
+        matches!(self, Effect::True)
+    }
+}
+
+impl Default for Effect {
+    fn default() -> Self {
+        Effect::True
     }
 }
 

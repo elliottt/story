@@ -1,11 +1,14 @@
 use crate::{
     arena::Id,
-    ir::{Action, Arena, Context, Effect, Expr, NamedArena, Predicate},
+    ir::{Action, And, Arena, Context, Effect, Expr, NamedArena, Predicate},
 };
 
 pub fn ground(context: &mut Context) {
     // Determine constant predicates by determining which ones don't show up in action effects.
     determine_const_predicates(context);
+
+    // Next, remove uses of `when` in effects, by duplicating actions.
+    elim_when(context);
 
     nnf_context(context);
 }
@@ -45,6 +48,65 @@ fn used_effect_preds(
             for eff in es.iter().copied() {
                 used_effect_preds(predicates, exprs, effects, eff);
             }
+        }
+        Effect::True => {}
+    }
+}
+
+fn elim_when(context: &mut Context) {
+    let mut work = std::mem::take(&mut context.actions).into_inner();
+
+    let mut whens = Vec::new();
+    while let Some(action) = work.pop() {
+        remove_when(context, &mut whens, action.effect);
+
+        // Queue up versions of this action that have additional preconditions and actions for each
+        // `when`.
+        work.extend(whens.drain(..).map(|w| w.extend(context, &action)));
+
+        // If all the effects were `when` nodes, can skip adding this effect back in.
+        if !context.effects[action.effect].is_true() {
+            context.actions.add(action);
+        }
+    }
+}
+
+struct When {
+    cond: Id<Expr>,
+    effect: Id<Effect>,
+}
+
+impl When {
+    fn extend(self, context: &mut Context, action: &Action) -> Action {
+        let mut copy = action.clone();
+        copy.precond = Expr::and(context, [action.precond, self.cond]);
+        copy.effect = Effect::and(context, [action.effect, self.effect]);
+        copy
+    }
+}
+
+// Remove the outer-most uses of `when` in the effects of an action. Mutates the action in-place so
+// that it's left as the version that includes no uses of `when`.
+fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
+    let mut eff = std::mem::take(&mut context.effects[id]);
+    match &mut eff {
+        &mut Effect::When { cond, effect } => {
+            whens.push(When { cond, effect });
+        }
+
+        Effect::And { effects } => {
+            effects.retain(|id| {
+                remove_when(context, whens, *id);
+                !context.effects[*id].is_true()
+            });
+            if effects.is_empty() {
+                return;
+            }
+            context.effects[id] = eff;
+        }
+
+        Effect::Atom { .. } | Effect::True => {
+            context.effects[id] = eff;
         }
     }
 }
