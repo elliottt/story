@@ -80,7 +80,7 @@ impl Pretty for Param {
 impl Pretty for Expr {
     fn to_doc<'a>(&self, context: &Context) -> BoxDoc<'a> {
         match self {
-            Expr::Inst { pred, args } => apply(context, &context.predicates[*pred].name, args),
+            Expr::Atom { pred, args } => apply(context, &context.predicates[*pred].name, args),
 
             Expr::Not { arg } => apply(context, "not", [&context.exprs[*arg]]),
             Expr::Eq { left, right } => apply(context, "=", [left, right]),

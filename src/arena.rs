@@ -84,6 +84,10 @@ impl<T> Arena<T> {
         Id::new(index)
     }
 
+    pub fn drain(&mut self) -> impl Iterator<Item = T> {
+        self.elems.drain(..)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.elems.iter()
     }
@@ -148,6 +152,11 @@ impl<T: Named> NamedArena<T> {
 
     pub fn get(&self, name: &str) -> Option<Id<T>> {
         self.names.get(name).copied()
+    }
+
+    pub fn drain(&mut self) -> impl Iterator<Item = T> {
+        self.names.clear();
+        self.elems.drain()
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {

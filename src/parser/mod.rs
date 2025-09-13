@@ -39,9 +39,7 @@ pub fn parse_domain<'a>(
                 match p.text(case.loc) {
                     ":types" => parse_types(p, &mut context.types)?,
                     ":constants" => parse_constants(p, context)?,
-                    ":predicates" => {
-                        parse_predicates(p, &context.types, &mut context.predicates)?
-                    }
+                    ":predicates" => parse_predicates(p, &context.types, &mut context.predicates)?,
 
                     ":action" => parse_action(p, context)?,
 
@@ -329,8 +327,8 @@ fn parse_expr_list(
     parser::Result::Ok(result)
 }
 
-// Parse and validate an instantiation of `pred`.
-fn parse_inst(
+// Parse and validate an atomic formula.
+fn parse_atom(
     p: &mut Parser<'_>,
     context: &mut Context,
     params: &[Param],
@@ -453,8 +451,8 @@ fn parse_expr(
             }
 
             _ => {
-                if let Some((pred, args)) = parse_inst(p, context, params, next)? {
-                    Result::Ok(context.exprs.add(Expr::Inst { pred, args }))
+                if let Some((pred, args)) = parse_atom(p, context, params, next)? {
+                    Result::Ok(context.exprs.add(Expr::Atom { pred, args }))
                 } else {
                     Result::Ok(Id::none())
                 }
@@ -476,10 +474,18 @@ fn parse_effect(
                 let effect = parse_effect(p, context, params)?;
                 Result::Ok(context.effects.add(Effect::When { cond, effect }))
             }
-            "not" => {
-                let arg = parse_effect(p, context, params)?;
-                Result::Ok(context.effects.add(Effect::Not { arg }))
-            }
+            "not" => p.list(|p| {
+                let next = p.expect(Token::Atom)?;
+                if let Some((pred, args)) = parse_atom(p, context, params, next)? {
+                    Result::Ok(context.effects.add(Effect::Atom {
+                        neg: true,
+                        pred,
+                        args,
+                    }))
+                } else {
+                    Result::Ok(Id::none())
+                }
+            }),
             "and" => {
                 let mut effects = Vec::new();
                 while p.next_is(Token::LParen)? {
@@ -488,8 +494,12 @@ fn parse_effect(
                 Result::Ok(context.effects.add(Effect::And { effects }))
             }
             _ => {
-                if let Some((pred, args)) = parse_inst(p, context, params, next)? {
-                    Result::Ok(context.effects.add(Effect::Inst { pred, args }))
+                if let Some((pred, args)) = parse_atom(p, context, params, next)? {
+                    Result::Ok(context.effects.add(Effect::Atom {
+                        neg: false,
+                        pred,
+                        args,
+                    }))
                 } else {
                     Result::Ok(Id::none())
                 }

@@ -33,16 +33,13 @@ fn used_effect_preds(
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
-        Effect::Inst { pred, .. } => {
+        Effect::Atom { pred, .. } => {
             predicates[*pred].is_const = false;
         }
         // NOTE: we ignore the condition in a `when` clause, as it is treated as a secondary
         // precondition of the action.
         Effect::When { effect, .. } => {
             used_effect_preds(predicates, exprs, effects, *effect);
-        }
-        Effect::Not { arg } => {
-            used_effect_preds(predicates, exprs, effects, *arg);
         }
         Effect::And { effects: es } => {
             for eff in es.iter().copied() {
@@ -80,7 +77,7 @@ fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
         &mut Expr::Not { arg } => negate_expr(context, arg),
 
         // There's nothing to be done for an instantiation, or equality.
-        Expr::Inst { .. } | Expr::Eq { .. } => id,
+        Expr::Atom { .. } | Expr::Eq { .. } => id,
 
         Expr::And { exprs } => {
             let mut exprs = std::mem::take(exprs);
@@ -105,7 +102,7 @@ fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
 fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
     match &context.exprs[id] {
         // We can't push negation down any further here.
-        Expr::Inst { .. } | Expr::Eq { .. } => context.exprs.add(Expr::Not { arg: id }),
+        Expr::Atom { .. } | Expr::Eq { .. } => context.exprs.add(Expr::Not { arg: id }),
 
         // Double-negation elimination
         &Expr::Not { arg } => negate_expr(context, arg),

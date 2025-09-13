@@ -70,7 +70,7 @@ pub struct Ident {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Inst {
+    Atom {
         pred: Id<Predicate>,
         args: Vec<Ident>,
     },
@@ -95,7 +95,8 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub enum Effect {
-    Inst {
+    Atom {
+        neg: bool,
         pred: Id<Predicate>,
         args: Vec<Ident>,
     },
@@ -103,10 +104,6 @@ pub enum Effect {
     When {
         cond: Id<Expr>,
         effect: Id<Effect>,
-    },
-
-    Not {
-        arg: Id<Effect>,
     },
 
     And {
