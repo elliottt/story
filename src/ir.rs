@@ -127,6 +127,15 @@ pub enum Expr {
     And { exprs: Vec<Id<Expr>> },
 
     Or { exprs: Vec<Id<Expr>> },
+
+    True,
+    False,
+}
+
+impl Default for Expr {
+    fn default() -> Self {
+        Expr::True
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -169,6 +178,11 @@ pub struct Action {
     pub loc: crate::parser::Loc,
     pub name: String,
     pub params: Vec<Param>,
+
+    // When this is an instantiated action, this vector will have the same size as `params` but
+    // supply the constants that it is insantiated with.
+    pub args: Vec<Id<Constant>>,
+
     pub precond: Id<Expr>,
     pub effect: Id<Effect>,
 }
@@ -176,5 +190,20 @@ pub struct Action {
 impl Named for Action {
     fn name(&self) -> &str {
         &self.name
+    }
+}
+
+impl Action {
+    pub fn instantiate(&self, c: &mut Context, args: Vec<Id<Constant>>) -> Self {
+        let mut instantiated = self.clone();
+
+        for arg in &args {
+            instantiated.name += "-";
+            instantiated.name += &c.constants[*arg].name;
+        }
+
+        instantiated.args = args;
+
+        instantiated
     }
 }

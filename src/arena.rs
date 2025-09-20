@@ -73,7 +73,7 @@ pub struct Arena<T> {
     elems: Vec<T>,
 }
 
-impl<T> Arena<T> {
+impl<T: 'static> Arena<T> {
     pub fn new() -> Self {
         Self { elems: Vec::new() }
     }
@@ -90,6 +90,13 @@ impl<T> Arena<T> {
 
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.elems.iter()
+    }
+
+    pub fn iter_with_id(&self) -> impl Iterator<Item = (Id<T>, &T)> + '_ {
+        self.elems
+            .iter()
+            .enumerate()
+            .map(|(ix, e)| (Id::new(ix), e))
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
@@ -171,6 +178,10 @@ impl<T: Named> NamedArena<T> {
         self.elems.iter()
     }
 
+    pub fn iter_with_id(&self) -> impl Iterator<Item = (Id<T>, &T)> {
+        self.elems.iter_with_id()
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.elems.iter_mut()
     }
@@ -178,7 +189,6 @@ impl<T: Named> NamedArena<T> {
     pub fn ids(&self) -> impl Iterator<Item = Id<T>> {
         self.names.values().copied()
     }
-
 }
 
 impl<T> std::ops::Index<Id<T>> for NamedArena<T> {

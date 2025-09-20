@@ -113,9 +113,7 @@ impl Pretty for Var {
                 }
                 BoxDoc::text(format!("??{}", ix))
             }
-            VarKind::Const { id } => {
-                BoxDoc::text(c.constants[id].name.clone())
-            }
+            VarKind::Const { id } => BoxDoc::text(c.constants[id].name.clone()),
         }
     }
 }
@@ -132,6 +130,8 @@ impl Pretty for Expr {
             Expr::Eq { left, right } => apply("=", [left.to_doc(c, ps), right.to_doc(c, ps)]),
             Expr::And { exprs } => apply("and", exprs.iter().map(|e| c.exprs[*e].to_doc(c, ps))),
             Expr::Or { exprs } => apply("or", exprs.iter().map(|e| c.exprs[*e].to_doc(c, ps))),
+            Expr::True => BoxDoc::text("#t"),
+            Expr::False => BoxDoc::text("#f"),
         }
     }
 }
@@ -160,7 +160,7 @@ impl Pretty for Effect {
                     c.effects[*effect].to_doc(c, ps),
                 ],
             ),
-            Effect::True => apply("true", []),
+            Effect::True => BoxDoc::text("#t"),
         }
     }
 }
@@ -175,11 +175,23 @@ impl Pretty for Action {
                 ":action",
                 [
                     BoxDoc::text(self.name.clone()),
-                    BoxDoc::concat([
-                        BoxDoc::text(":parameters"),
-                        BoxDoc::line(),
-                        list(self.params.iter().map(|p| p.to_doc(c, ps))),
-                    ])
+                    if self.params.len() != self.args.len() {
+                        BoxDoc::concat([
+                            BoxDoc::text(":parameters"),
+                            BoxDoc::line(),
+                            list(self.params.iter().map(|p| p.to_doc(c, ps))),
+                        ])
+                    } else {
+                        BoxDoc::concat([
+                            BoxDoc::text(":arguments"),
+                            BoxDoc::line(),
+                            list(
+                                self.args
+                                    .iter()
+                                    .map(|k| BoxDoc::text(c.constants[*k].name.clone())),
+                            ),
+                        ])
+                    }
                     .nest(2),
                     BoxDoc::concat([
                         BoxDoc::text(":precondition"),

@@ -1,14 +1,19 @@
+use std::collections::HashMap;
+
 use crate::{
     arena::Id,
-    ir::{Action, And, Arena, Context, Effect, Expr, NamedArena, Predicate},
+    ir::{Action, And, Arena, Constant, Context, Effect, Expr, NamedArena, Predicate, Type},
 };
 
 pub fn ground(context: &mut Context) {
     // Determine constant predicates by determining which ones don't show up in action effects.
     determine_const_predicates(context);
 
-    // Next, remove uses of `when` in effects, by duplicating actions.
+    // Remove uses of `when` in effects, by duplicating actions.
     elim_when(context);
+
+    // Remove parameters by instantiating all actions
+    instantiate_actions(context);
 
     nnf_context(context);
 }
@@ -85,8 +90,8 @@ impl When {
     }
 }
 
-// Remove the outer-most uses of `when` in the effects of an action. Mutates the action in-place so
-// that it's left as the version that includes no uses of `when`.
+/// Remove the outer-most uses of `when` in the effects of an action. Mutates the action in-place
+/// so that it's left as the version that includes no uses of `when`.
 fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
     let mut eff = std::mem::take(&mut context.effects[id]);
     match &mut eff {
@@ -107,6 +112,58 @@ fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
 
         Effect::Atom { .. } | Effect::True => {
             context.effects[id] = eff;
+        }
+    }
+}
+
+type Values = HashMap<Id<Type>, Vec<Id<Constant>>>;
+
+/// Duplicate actions for every instantiation of their parameters
+fn instantiate_actions(context: &mut Context) {
+    let mut type_values = Values::new();
+
+    let all_values = Vec::from_iter(context.constants.iter_with_id().map(|(i, _)| i));
+    type_values.insert(Id::none(), all_values);
+
+    let mut work = Vec::from_iter(context.constants.iter_with_id().map(|(id, c)| (id, c.ty)));
+    while let Some((c, ty)) = work.pop() {
+        type_values.entry(ty).or_default().push(c);
+        let st = context.types[ty].super_type;
+        if st.exists() {
+            work.push((c, st))
+        }
+    }
+
+    for action in std::mem::take(&mut context.actions).drain() {
+        let param_tys = Vec::from_iter(action.params.iter().map(|p| p.ty));
+
+        // If this action has any parameters whose type is uninhabited, we can skip specializing it
+        // at all.
+        if param_tys
+            .iter()
+            .any(|ty| ty.exists() && type_values[ty].is_empty())
+        {
+            continue;
+        }
+
+        let mut insts = vec![Vec::new()];
+        let mut next = Vec::new();
+        for ty in param_tys {
+            for inst in &mut insts {
+                let (last, front) = type_values[&ty].split_last().unwrap();
+                for val in front {
+                    let mut inst = inst.clone();
+                    inst.push(*val);
+                    next.push(inst);
+                }
+                inst.push(*last);
+            }
+            insts.extend(next.drain(..));
+        }
+
+        for args in insts.drain(..) {
+            let inst = action.instantiate(context, args);
+            context.actions.add(inst);
         }
     }
 }
@@ -138,8 +195,8 @@ fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
     match &mut context.exprs[id] {
         &mut Expr::Not { arg } => negate_expr(context, arg),
 
-        // There's nothing to be done for an instantiation, or equality.
-        Expr::Atom { .. } | Expr::Eq { .. } => id,
+        // There's nothing to be done for an atom, equality, true, or false.
+        Expr::Atom { .. } | Expr::Eq { .. } | Expr::True | Expr::False => id,
 
         Expr::And { exprs } => {
             let mut exprs = std::mem::take(exprs);
@@ -185,5 +242,9 @@ fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
             }
             context.exprs.add(Expr::And { exprs: args })
         }
+
+        Expr::True => context.exprs.add(Expr::False),
+
+        Expr::False => context.exprs.add(Expr::True),
     }
 }
