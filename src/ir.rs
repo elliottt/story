@@ -101,28 +101,32 @@ pub struct Ident {
 }
 
 #[derive(Clone, Debug)]
+pub enum VarKind {
+    Param { ix: u16 },
+    Const { id: Id<Constant> },
+}
+
+impl VarKind {
+    pub const INVALID_PARAM: u16 = u16::MAX;
+}
+
+#[derive(Clone, Debug)]
+pub struct Var {
+    pub loc: crate::parser::Loc,
+    pub kind: VarKind,
+}
+
+#[derive(Clone, Debug)]
 pub enum Expr {
-    Atom {
-        pred: Id<Predicate>,
-        args: Vec<Ident>,
-    },
+    Atom { pred: Id<Predicate>, args: Vec<Var> },
 
-    Not {
-        arg: Id<Expr>,
-    },
+    Not { arg: Id<Expr> },
 
-    Eq {
-        left: Ident,
-        right: Ident,
-    },
+    Eq { left: Var, right: Var },
 
-    And {
-        exprs: Vec<Id<Expr>>,
-    },
+    And { exprs: Vec<Id<Expr>> },
 
-    Or {
-        exprs: Vec<Id<Expr>>,
-    },
+    Or { exprs: Vec<Id<Expr>> },
 }
 
 #[derive(Clone, Debug)]
@@ -130,7 +134,7 @@ pub enum Effect {
     Atom {
         neg: bool,
         pred: Id<Predicate>,
-        args: Vec<Ident>,
+        args: Vec<Var>,
     },
 
     When {

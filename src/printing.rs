@@ -1,21 +1,22 @@
 use pretty::BoxDoc;
 
-use crate::ir::{Action, Context, Effect, Expr, Ident, Param, Predicate};
+use crate::ir::{Action, Context, Effect, Expr, Ident, Param, Predicate, Var, VarKind};
 
-pub fn print_context(context: &Context) -> String {
+pub fn print_context(c: &Context) -> String {
     let mut doc = BoxDoc::nil();
+    let mut ps = Vec::with_capacity(2);
 
-    for p in context.predicates.iter() {
+    for p in c.predicates.iter() {
         doc = doc.append(BoxDoc::concat([
-            p.to_doc(context),
+            p.to_doc(c, &mut ps),
             BoxDoc::hardline(),
             BoxDoc::hardline(),
         ]));
     }
 
     doc = BoxDoc::concat([doc, BoxDoc::text("; Expressions"), BoxDoc::hardline()]);
-    for e in context.exprs.iter() {
-        doc = BoxDoc::concat([doc, e.to_doc(context), BoxDoc::hardline()])
+    for e in c.exprs.iter() {
+        doc = BoxDoc::concat([doc, e.to_doc(c, &mut ps), BoxDoc::hardline()])
     }
 
     doc = BoxDoc::concat([
@@ -24,12 +25,14 @@ pub fn print_context(context: &Context) -> String {
         BoxDoc::text("; Effects"),
         BoxDoc::hardline(),
     ]);
-    for e in context.effects.iter() {
-        doc = BoxDoc::concat([doc, e.to_doc(context), BoxDoc::hardline()])
+    for e in c.effects.iter() {
+        doc = BoxDoc::concat([doc, e.to_doc(c, &mut ps), BoxDoc::hardline()])
     }
 
-    for action in context.actions.iter() {
-        doc = BoxDoc::concat([doc, BoxDoc::hardline(), action.to_doc(context)]);
+    for action in c.actions.iter() {
+        ps.push(&action.params);
+        doc = BoxDoc::concat([doc, BoxDoc::hardline(), action.to_doc(c, &mut ps)]);
+        ps.pop();
     }
 
     let mut w = Vec::new();
@@ -57,11 +60,11 @@ fn apply<'a>(fun: &str, ts: impl IntoIterator<Item = BoxDoc<'a>>) -> BoxDoc<'a> 
 }
 
 pub trait Pretty {
-    fn to_doc<'a>(&self, context: &Context) -> BoxDoc<'a>;
+    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a>;
 }
 
 impl Pretty for Predicate {
-    fn to_doc<'a>(&self, context: &Context) -> BoxDoc<'a> {
+    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
         BoxDoc::concat([
             BoxDoc::text("; "),
             if self.is_const {
@@ -70,74 +73,91 @@ impl Pretty for Predicate {
                 BoxDoc::text("predicate")
             },
             BoxDoc::hardline(),
-            apply(&self.name, self.params.iter().map(|p| p.to_doc(context))),
+            apply(&self.name, self.params.iter().map(|p| p.to_doc(c, ps))),
         ])
     }
 }
 
 impl Pretty for Ident {
-    fn to_doc<'a>(&self, _context: &Context) -> BoxDoc<'a> {
+    fn to_doc<'a, 'c>(&self, _c: &Context, _ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
         BoxDoc::text(self.name.clone())
     }
 }
 
 impl Pretty for Param {
-    fn to_doc<'a>(&self, context: &Context) -> BoxDoc<'a> {
+    fn to_doc<'a, 'c>(&self, c: &Context, _ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
         BoxDoc::group(BoxDoc::concat([
             BoxDoc::text(self.name.clone()),
             BoxDoc::space(),
             BoxDoc::text("-"),
             BoxDoc::space(),
-            BoxDoc::text(context.types[self.ty].name.clone()),
+            BoxDoc::text(c.types[self.ty].name.clone()),
         ]))
     }
 }
 
+impl Pretty for Var {
+    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+        match self.kind {
+            VarKind::Param { ix } => {
+                let mut ix: usize = ix.into();
+                for scope in ps.iter().rev().copied() {
+                    if ix > scope.len() {
+                        ix -= scope.len();
+                        continue;
+                    }
+
+                    let rel = scope.len() - 1 - ix;
+                    let p = &scope[rel];
+                    return BoxDoc::text(p.name.clone());
+                }
+                BoxDoc::text(format!("??{}", ix))
+            }
+            VarKind::Const { id } => {
+                BoxDoc::text(c.constants[id].name.clone())
+            }
+        }
+    }
+}
+
 impl Pretty for Expr {
-    fn to_doc<'a>(&self, context: &Context) -> BoxDoc<'a> {
+    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
         match self {
             Expr::Atom { pred, args } => apply(
-                &context.predicates[*pred].name,
-                args.iter().map(|a| a.to_doc(context)),
+                &c.predicates[*pred].name,
+                args.iter().map(|a| a.to_doc(c, ps)),
             ),
 
-            Expr::Not { arg } => apply("not", [context.exprs[*arg].to_doc(context)]),
-            Expr::Eq { left, right } => apply("=", [left.to_doc(context), right.to_doc(context)]),
-            Expr::And { exprs } => apply(
-                "and",
-                exprs.iter().map(|e| context.exprs[*e].to_doc(context)),
-            ),
-            Expr::Or { exprs } => apply(
-                "or",
-                exprs.iter().map(|e| context.exprs[*e].to_doc(context)),
-            ),
+            Expr::Not { arg } => apply("not", [c.exprs[*arg].to_doc(c, ps)]),
+            Expr::Eq { left, right } => apply("=", [left.to_doc(c, ps), right.to_doc(c, ps)]),
+            Expr::And { exprs } => apply("and", exprs.iter().map(|e| c.exprs[*e].to_doc(c, ps))),
+            Expr::Or { exprs } => apply("or", exprs.iter().map(|e| c.exprs[*e].to_doc(c, ps))),
         }
     }
 }
 
 impl Pretty for Effect {
-    fn to_doc<'a>(&self, context: &Context) -> BoxDoc<'a> {
+    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
         match self {
-            Effect::And { effects } => apply(
-                "and",
-                effects.iter().map(|e| context.effects[*e].to_doc(context)),
-            ),
+            Effect::And { effects } => {
+                apply("and", effects.iter().map(|e| c.effects[*e].to_doc(c, ps)))
+            }
             Effect::Atom { neg, pred, args } if *neg => {
                 let pred = apply(
-                    &context.predicates[*pred].name,
-                    args.iter().map(|a| a.to_doc(context)),
+                    &c.predicates[*pred].name,
+                    args.iter().map(|a| a.to_doc(c, ps)),
                 );
                 apply("not", [pred])
             }
             Effect::Atom { pred, args, .. } => apply(
-                &context.predicates[*pred].name,
-                args.iter().map(|a| a.to_doc(context)),
+                &c.predicates[*pred].name,
+                args.iter().map(|a| a.to_doc(c, ps)),
             ),
             Effect::When { cond, effect } => apply(
                 "when",
                 [
-                    context.exprs[*cond].to_doc(context),
-                    context.effects[*effect].to_doc(context),
+                    c.exprs[*cond].to_doc(c, ps),
+                    c.effects[*effect].to_doc(c, ps),
                 ],
             ),
             Effect::True => apply("true", []),
@@ -146,7 +166,7 @@ impl Pretty for Effect {
 }
 
 impl Pretty for Action {
-    fn to_doc<'a>(&self, c: &Context) -> BoxDoc<'a> {
+    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
         BoxDoc::concat([
             BoxDoc::hardline(),
             BoxDoc::text("; Action"),
@@ -158,19 +178,21 @@ impl Pretty for Action {
                     BoxDoc::concat([
                         BoxDoc::text(":parameters"),
                         BoxDoc::line(),
-                        list(self.params.iter().map(|p| p.to_doc(c))),
+                        list(self.params.iter().map(|p| p.to_doc(c, ps))),
                     ])
                     .nest(2),
                     BoxDoc::concat([
                         BoxDoc::text(":precondition"),
                         BoxDoc::line(),
-                        c.exprs[self.precond].to_doc(c),
-                    ]).nest(2),
+                        c.exprs[self.precond].to_doc(c, ps),
+                    ])
+                    .nest(2),
                     BoxDoc::concat([
                         BoxDoc::text(":effect"),
                         BoxDoc::line(),
-                        c.effects[self.effect].to_doc(c),
-                    ]).nest(2),
+                        c.effects[self.effect].to_doc(c, ps),
+                    ])
+                    .nest(2),
                 ],
             ),
         ])

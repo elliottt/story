@@ -7,7 +7,10 @@ pub use lexer::Loc;
 use crate::{
     File, Files,
     arena::Id,
-    ir::{Action, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate, Type},
+    ir::{
+        Action, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate, Type, Var,
+        VarKind,
+    },
 };
 use lexer::Token;
 use parser::{Parser, Result};
@@ -333,7 +336,7 @@ fn parse_atom(
     context: &mut Context,
     params: &[Param],
     next: lexer::Lexeme,
-) -> parser::Result<Option<(Id<Predicate>, Vec<Ident>)>> {
+) -> parser::Result<Option<(Id<Predicate>, Vec<Var>)>> {
     let text = p.text(next.loc);
     let pred = if let Some(pred) = context.predicates.get(text) {
         pred
@@ -351,7 +354,7 @@ fn parse_atom(
     let mut end = next.loc;
     let mut args = Vec::new();
     while p.next_is(Token::Atom)? {
-        let ident = parse_ident(p)?;
+        let ident = parse_var(p, context, params)?;
         end = ident.loc;
         args.push(ident);
     }
@@ -375,22 +378,19 @@ fn parse_atom(
         }
 
         for (arg, param) in args.iter().zip(pred.params.iter()) {
-            let arg_ty = if arg.name.starts_with('?') {
-                let Some(def) = params.iter().find(|p| p.name == arg.name) else {
-                    p.error(arg.loc, "Unknown param")
-                        .label(arg.loc, "Used here");
-                    continue;
-                };
-
-                def.ty
-            } else {
-                let Some(def) = context.constants.iter().find(|c| c.name == arg.name) else {
-                    p.error(arg.loc, "Unknown constant")
-                        .label(arg.loc, "Used here");
-                    continue;
-                };
-
-                def.ty
+            let arg_ty = match arg.kind {
+                VarKind::Param { ix } => {
+                    if ix == VarKind::INVALID_PARAM {
+                        continue;
+                    }
+                    params[usize::from(ix)].ty
+                }
+                VarKind::Const { id } => {
+                    if !id.exists() {
+                        continue;
+                    }
+                    context.constants[id].ty
+                }
             };
 
             if arg_ty.exists() && param.ty.exists() && arg_ty != param.ty {
@@ -412,6 +412,32 @@ fn parse_atom(
     Result::Ok(Some((pred, args)))
 }
 
+fn parse_var(p: &mut Parser<'_>, context: &mut Context, params: &[Param]) -> parser::Result<Var> {
+    let lex = p.expect(Token::Atom)?;
+    let name = p.text(lex.loc);
+    let kind = if name.starts_with('?') {
+        let ix = if let Some(ix) = params.iter().rposition(|p| p.name == name) {
+            ix.try_into().unwrap()
+        } else {
+            p.error(lex.loc, "Unknown param")
+                .label(lex.loc, "Used here");
+            VarKind::INVALID_PARAM
+        };
+        VarKind::Param { ix }
+    } else {
+        let id = if let Some(ix) = context.constants.iter().position(|c| c.name == name) {
+            Id::new(ix)
+        } else {
+            p.error(lex.loc, "Unknown constant")
+                .label(lex.loc, "Used here");
+            Id::none()
+        };
+        VarKind::Const { id }
+    };
+
+    Result::Ok(Var { loc: lex.loc, kind })
+}
+
 fn parse_expr(
     p: &mut Parser<'_>,
     context: &mut Context,
@@ -427,8 +453,8 @@ fn parse_expr(
             }
 
             "=" => {
-                let left = parse_ident(p)?;
-                let right = parse_ident(p)?;
+                let left = parse_var(p, context, params)?;
+                let right = parse_var(p, context, params)?;
                 Result::Ok(context.exprs.add(Expr::Eq { left, right }))
             }
 
