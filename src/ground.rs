@@ -208,10 +208,11 @@ fn instantiate_actions(context: &mut Context) {
         }
 
         for args in insts.drain(..) {
-            let inst = action.instantiate(context, args);
+            let mut inst = action.instantiate(context, args);
+            inst.effect = eval::simplify(context, inst.effect);
 
-            // If the action contains invalid preconditions, we can skip any further processing.
-            if eval::valid(context, inst.effect) {
+            // If the effect collapsed to #t, we can ignore this action.
+            if !matches!(context.effects[inst.effect], Effect::True) {
                 context.actions.add(inst);
             }
         }

@@ -159,12 +159,6 @@ pub enum Expr {
     False,
 }
 
-impl Default for Expr {
-    fn default() -> Self {
-        Expr::True
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum Effect {
     /// Instantiation of a forall. The forall will be replaced when the instantiation occurrs.
@@ -213,12 +207,6 @@ impl Id<Effect> {
         };
 
         c.effects.add(Effect::Inst { args, body })
-    }
-}
-
-impl Default for Effect {
-    fn default() -> Self {
-        Effect::True
     }
 }
 

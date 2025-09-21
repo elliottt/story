@@ -1,166 +1,281 @@
-use crate::ir::{Constant, Context, Effect, Expr, Id, Var, VarKind};
+use crate::ir::{Constant, Context, Effect, Expr, Id, Param, Var, VarKind};
 
 type Env = Vec<Vec<Id<Constant>>>;
 
-fn lookup(env: &Env, var: &Var) -> Id<Constant> {
-    match var.kind {
-        VarKind::Param { ix } => {
-            let mut ix = usize::from(ix);
-            for scope in env.iter() {
-                if scope.len() < ix {
-                    ix -= scope.len();
-                    continue;
-                }
-
-                return scope[ix];
-            }
-            Id::none()
-        }
-        VarKind::Const { id } => id,
-    }
+pub fn simplify(c: &mut Context, effect: Id<Effect>) -> Id<Effect> {
+    Simplify::new(c).effect(c, effect)
 }
 
-pub fn valid(c: &Context, e: Id<Effect>) -> bool {
-    let mut env = Env::new();
-    e.valid(c, &mut env) != Valid::False
+struct Simplify {
+    t: Id<Expr>,
+    f: Id<Expr>,
+    env: Env,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-enum Valid {
-    False,
-    Unknown,
-    True,
-}
-
-impl Valid {
-    fn negate(self) -> Self {
-        match self {
-            Valid::False => Valid::True,
-            Valid::Unknown => Valid::Unknown,
-            Valid::True => Valid::False,
+impl Simplify {
+    fn new(c: &mut Context) -> Self {
+        Self {
+            t: c.exprs.add(Expr::True),
+            f: c.exprs.add(Expr::False),
+            env: Vec::new(),
         }
     }
 
-    fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Valid::False, _) => Valid::False,
-            (_, Valid::False) => Valid::False,
-            (Valid::Unknown, _) => Valid::Unknown,
-            (_, Valid::Unknown) => Valid::Unknown,
-            _ => Valid::True,
-        }
-    }
-
-    fn or(self, other: Self) -> Self {
-        match (self, other) {
-            (Valid::True, _) => Valid::True,
-            (_, Valid::True) => Valid::True,
-            (Valid::Unknown, _) => Valid::Unknown,
-            (_, Valid::Unknown) => Valid::Unknown,
-            _ => Valid::False,
-        }
-    }
-}
-
-impl From<bool> for Valid {
-    fn from(value: bool) -> Self {
-        if value { Valid::True } else { Valid::False }
-    }
-}
-
-trait IsValid {
-    fn valid(&self, c: &Context, env: &mut Env) -> Valid;
-}
-
-impl IsValid for Id<Effect> {
-    fn valid(&self, c: &Context, env: &mut Env) -> Valid {
-        match &c.effects[*self] {
-            Effect::Inst { args, body } => {
-                env.push(Vec::from(args.as_slice()));
-                let res = body.valid(c, env);
-                env.pop();
-                res
-            }
-            Effect::Forall { params, body } => {
-                env.push(Vec::from_iter(std::iter::repeat_n(
-                    Id::none(),
-                    params.len(),
-                )));
-                let res = body.valid(c, env);
-                env.pop();
-                res
-            }
-            Effect::Atom { .. } => Valid::Unknown,
-            Effect::When { cond, .. } => cond.valid(c, env),
-            Effect::And { effects } => effects
-                .iter()
-                .fold(Valid::True, |acc, e| acc.and(e.valid(c, env))),
-            Effect::True => Valid::True,
-        }
-    }
-}
-
-impl IsValid for Id<Expr> {
-    fn valid(&self, c: &Context, env: &mut Env) -> Valid {
-        let res = match &c.exprs[*self] {
-            Expr::Inst { args, body } => {
-                env.push(Vec::from(args.as_slice()));
-                let res = body.valid(c, env);
-                env.pop();
-                res
-            }
-            Expr::Forall { params, body } => {
-                env.push(Vec::from_iter(std::iter::repeat_n(
-                    Id::none(),
-                    params.len(),
-                )));
-                let res = body.valid(c, env);
-                env.pop();
-                res
-            }
-            Expr::Exists { params, body } => {
-                env.push(Vec::from_iter(std::iter::repeat_n(
-                    Id::none(),
-                    params.len(),
-                )));
-                let res = body.valid(c, env);
-                env.pop();
-                res
-            }
-            Expr::Atom { .. } => Valid::Unknown,
-            Expr::Not { arg } => arg.valid(c, env).negate(),
-            Expr::Eq { left, right } => {
-                let l = lookup(env, left);
-                let r = lookup(env, right);
-                if l.exists() && r.exists() {
-                    Valid::from(l == r)
-                } else {
-                    Valid::Unknown
-                }
-            }
-            Expr::And { exprs } => {
-                let mut acc = Valid::True;
-                for e in exprs.iter() {
-                    acc = acc.and(e.valid(c, env));
-                    if acc == Valid::False {
-                        break;
-                    }
-                }
-                acc
-            }
-            Expr::Or { exprs } => {
-                let mut acc = Valid::False;
-                for e in exprs.iter() {
-                    acc = acc.or(e.valid(c, env));
-                    if acc == Valid::True {
-                        break;
-                    }
-                }
-                acc
-            }
-            Expr::True => Valid::True,
-            Expr::False => Valid::False,
-        };
+    fn with_args<T>(&mut self, args: &[Id<Constant>], body: impl FnOnce(&mut Self) -> T) -> T {
+        self.env.push(Vec::from(args));
+        let res = body(self);
+        self.env.pop();
         res
+    }
+
+    fn with_params<T>(&mut self, params: &[Param], body: impl FnOnce(&mut Self) -> T) -> T {
+        self.env
+            .push(std::iter::repeat_n(Id::none(), params.len()).collect());
+        let res = body(self);
+        self.env.pop();
+        res
+    }
+
+    fn lookup(&self, var: &Var) -> Id<Constant> {
+        match var.kind {
+            VarKind::Param { ix } => {
+                let mut ix = usize::from(ix);
+                for scope in self.env.iter() {
+                    if scope.len() < ix {
+                        ix -= scope.len();
+                        continue;
+                    }
+
+                    return scope[ix];
+                }
+                Id::none()
+            }
+            VarKind::Const { id } => id,
+        }
+    }
+
+    fn effect(&mut self, c: &mut Context, id: Id<Effect>) -> Id<Effect> {
+        let eff = std::mem::replace(&mut c.effects[id], Effect::True);
+        let new = match &eff {
+            Effect::Inst { args, body } => {
+                let sbody = self.with_args(args, |s| s.effect(c, *body));
+                match c.effects[sbody] {
+                    Effect::True => sbody,
+                    _ => {
+                        if sbody == *body {
+                            id
+                        } else {
+                            c.effects.add(Effect::Inst {
+                                args: args.clone(),
+                                body: sbody,
+                            })
+                        }
+                    }
+                }
+            }
+
+            Effect::Forall { params, body } => {
+                let sbody = self.with_params(params, |s| s.effect(c, *body));
+                match c.effects[sbody] {
+                    Effect::True => sbody,
+                    _ => {
+                        if sbody == *body {
+                            id
+                        } else {
+                            c.effects.add(Effect::Forall {
+                                params: params.clone(),
+                                body: sbody,
+                            })
+                        }
+                    }
+                }
+            }
+
+            Effect::Atom { .. } => id,
+
+            Effect::When { cond, effect } => {
+                let scond = self.expr(c, *cond);
+                let seffect = self.effect(c, *effect);
+                match c.exprs[scond] {
+                    Expr::True => seffect,
+                    Expr::False => c.effects.add(Effect::True),
+                    _ => {
+                        if scond == *cond && seffect == *effect {
+                            id
+                        } else {
+                            c.effects.add(Effect::When {
+                                cond: scond,
+                                effect: seffect,
+                            })
+                        }
+                    }
+                }
+            }
+
+            Effect::And { effects } => {
+                let mut changed = false;
+                let seffects = Vec::from_iter(effects.iter().filter_map(|e| {
+                    let new = self.effect(c, *e);
+                    if matches!(c.effects[new], Effect::True) {
+                        changed = true;
+                        None
+                    } else {
+                        changed = changed || new != *e;
+                        Some(new)
+                    }
+                }));
+                if !changed {
+                    id
+                } else {
+                    if seffects.is_empty() {
+                        c.effects.add(Effect::True)
+                    } else {
+                        c.effects.add(Effect::And { effects: seffects })
+                    }
+                }
+            }
+
+            Effect::True => id,
+        };
+        c.effects[id] = eff;
+        new
+    }
+
+    fn expr(&mut self, c: &mut Context, id: Id<Expr>) -> Id<Expr> {
+        let expr = std::mem::replace(&mut c.exprs[id], Expr::True);
+
+        let new = match &expr {
+            Expr::Inst { args, body } => {
+                let sbody = self.with_args(args, |s| s.expr(c, *body));
+                if sbody == *body {
+                    id
+                } else {
+                    c.exprs.add(Expr::Inst {
+                        args: args.clone(),
+                        body: sbody,
+                    })
+                }
+            }
+
+            Expr::Forall { params, body } => {
+                let sbody = self.with_params(params, |s| s.expr(c, *body));
+                if sbody == *body {
+                    id
+                } else {
+                    c.exprs.add(Expr::Forall {
+                        params: params.clone(),
+                        body: sbody,
+                    })
+                }
+            }
+
+            Expr::Exists { params, body } => {
+                let sbody = self.with_params(params, |s| s.expr(c, *body));
+                if sbody == *body {
+                    id
+                } else {
+                    c.exprs.add(Expr::Exists {
+                        params: params.clone(),
+                        body: sbody,
+                    })
+                }
+            }
+
+            Expr::Not { arg } => {
+                let sarg = self.expr(c, *arg);
+                match c.exprs[sarg] {
+                    Expr::True => self.f,
+                    Expr::False => self.t,
+                    _ => {
+                        if sarg == *arg {
+                            id
+                        } else {
+                            c.exprs.add(Expr::Not { arg: sarg })
+                        }
+                    }
+                }
+            }
+
+            Expr::Eq { left, right } => {
+                let l = self.lookup(left);
+                let r = self.lookup(right);
+                if l.exists() && r.exists() {
+                    if l == r { self.t } else { self.f }
+                } else {
+                    id
+                }
+            }
+
+            Expr::And { exprs } => {
+                let mut changed = false;
+                let mut collapsed = false;
+                let sexprs = Vec::from_iter(exprs.iter().filter_map(|e| {
+                    let new = self.expr(c, *e);
+                    match &c.exprs[new] {
+                        Expr::True => {
+                            changed = true;
+                            None
+                        }
+                        Expr::False => {
+                            collapsed = true;
+                            None
+                        }
+                        _ => {
+                            changed = changed || new != *e;
+                            Some(new)
+                        }
+                    }
+                }));
+                if collapsed {
+                    self.f
+                } else if !changed {
+                    id
+                } else {
+                    if sexprs.is_empty() {
+                        self.t
+                    } else {
+                        c.exprs.add(Expr::And { exprs: sexprs })
+                    }
+                }
+            }
+
+            Expr::Or { exprs } => {
+                let mut changed = false;
+                let mut collapsed = false;
+                let sexprs = Vec::from_iter(exprs.iter().filter_map(|e| {
+                    let new = self.expr(c, *e);
+                    match &c.exprs[new] {
+                        Expr::True => {
+                            collapsed = true;
+                            None
+                        }
+                        Expr::False => {
+                            changed = true;
+                            None
+                        }
+                        _ => {
+                            changed = changed || new != *e;
+                            Some(new)
+                        }
+                    }
+                }));
+                if collapsed {
+                    self.t
+                } else if !changed {
+                    id
+                } else {
+                    if sexprs.is_empty() {
+                        self.f
+                    } else {
+                        c.exprs.add(Expr::Or { exprs: sexprs })
+                    }
+                }
+            }
+
+            Expr::True | Expr::False | Expr::Atom { .. } => id,
+        };
+
+        c.exprs[id] = expr;
+        new
     }
 }
