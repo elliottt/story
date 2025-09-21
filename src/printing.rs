@@ -16,23 +16,8 @@ pub fn print_context(c: &Context) -> String {
         ]));
     }
 
-    doc = BoxDoc::concat([doc, BoxDoc::text("; Expressions"), BoxDoc::hardline()]);
-    for e in c.exprs.iter() {
-        doc = BoxDoc::concat([doc, e.to_doc(c, &mut ps), BoxDoc::hardline()])
-    }
-
-    doc = BoxDoc::concat([
-        doc,
-        BoxDoc::hardline(),
-        BoxDoc::text("; Effects"),
-        BoxDoc::hardline(),
-    ]);
-    for e in c.effects.iter() {
-        doc = BoxDoc::concat([doc, e.to_doc(c, &mut ps), BoxDoc::hardline()])
-    }
-
     for action in c.actions.iter() {
-        doc = BoxDoc::concat([doc, BoxDoc::hardline(), action.to_doc(c, &mut ps)]);
+        doc = BoxDoc::concat([doc, action.to_doc(c, &mut ps), BoxDoc::hardline()]);
         ps.pop();
     }
 

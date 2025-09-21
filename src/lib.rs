@@ -1,5 +1,6 @@
 mod arena;
 mod context;
+mod eval;
 mod ground;
 pub mod ir;
 pub mod parser;

@@ -1,13 +1,3 @@
-.cabal-sandbox/
-cabal.sandbox.config
-dist/
-dist-newstyle/
-cabal.project.local
-*.prof
-.ghc.environment.*
-tags
-
-
 # Added by cargo
 
 /target

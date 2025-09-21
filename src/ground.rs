@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     arena::Id,
+    eval,
     ir::{Action, And, Arena, Constant, Context, Effect, Expr, NamedArena, Predicate, Type},
 };
 
@@ -208,7 +209,11 @@ fn instantiate_actions(context: &mut Context) {
 
         for args in insts.drain(..) {
             let inst = action.instantiate(context, args);
-            context.actions.add(inst);
+
+            // If the action contains invalid preconditions, we can skip any further processing.
+            if eval::valid(context, inst.effect) {
+                context.actions.add(inst);
+            }
         }
     }
 }
