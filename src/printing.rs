@@ -1,6 +1,8 @@
 use pretty::BoxDoc;
 
-use crate::ir::{Action, Context, Effect, Expr, Ident, Param, Predicate, Var, VarKind};
+use crate::ir::{
+    Action, Constant, Context, Effect, Expr, Id, Ident, Param, Predicate, Var, VarKind,
+};
 
 pub fn print_context(c: &Context) -> String {
     let mut doc = BoxDoc::nil();
@@ -30,7 +32,6 @@ pub fn print_context(c: &Context) -> String {
     }
 
     for action in c.actions.iter() {
-        ps.push(&action.params);
         doc = BoxDoc::concat([doc, BoxDoc::hardline(), action.to_doc(c, &mut ps)]);
         ps.pop();
     }
@@ -59,12 +60,14 @@ fn apply<'a>(fun: &str, ts: impl IntoIterator<Item = BoxDoc<'a>>) -> BoxDoc<'a> 
     ])
 }
 
+pub type Env<'a> = Vec<Vec<BoxDoc<'a>>>;
+
 pub trait Pretty {
-    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a>;
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a>;
 }
 
 impl Pretty for Predicate {
-    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         BoxDoc::concat([
             BoxDoc::text("; "),
             if self.is_const {
@@ -79,13 +82,13 @@ impl Pretty for Predicate {
 }
 
 impl Pretty for Ident {
-    fn to_doc<'a, 'c>(&self, _c: &Context, _ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, _c: &Context, _ps: &mut Env<'a>) -> BoxDoc<'a> {
         BoxDoc::text(self.name.clone())
     }
 }
 
 impl Pretty for Param {
-    fn to_doc<'a, 'c>(&self, c: &Context, _ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, c: &Context, _ps: &mut Env<'a>) -> BoxDoc<'a> {
         BoxDoc::group(BoxDoc::concat([
             BoxDoc::text(self.name.clone()),
             BoxDoc::space(),
@@ -97,19 +100,18 @@ impl Pretty for Param {
 }
 
 impl Pretty for Var {
-    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         match self.kind {
             VarKind::Param { ix } => {
                 let mut ix: usize = ix.into();
-                for scope in ps.iter().rev().copied() {
+                for scope in ps.iter().rev() {
                     if ix > scope.len() {
                         ix -= scope.len();
                         continue;
                     }
 
                     let rel = scope.len() - 1 - ix;
-                    let p = &scope[rel];
-                    return BoxDoc::text(p.name.clone());
+                    return scope[rel].clone();
                 }
                 BoxDoc::text(format!("??{}", ix))
             }
@@ -118,13 +120,70 @@ impl Pretty for Var {
     }
 }
 
+fn pp_inst<'a, T: Pretty>(
+    c: &Context,
+    ps: &mut Env<'a>,
+    args: &[Id<Constant>],
+    body: &T,
+) -> BoxDoc<'a> {
+    let arg_names = args
+        .iter()
+        .map(|k| BoxDoc::text(c.constants[*k].name.clone()))
+        .collect();
+
+    ps.push(arg_names);
+    let doc = body.to_doc(c, ps);
+    ps.pop();
+    doc
+}
+
+fn pp_quantifier<'a, T: Pretty>(
+    c: &Context,
+    ps: &mut Env<'a>,
+    name: &str,
+    params: &[Param],
+    body: &T,
+) -> BoxDoc<'a> {
+    let mut param_names = Vec::with_capacity(params.len());
+
+    let params_doc = list(params.iter().map(|p| {
+        let name = BoxDoc::text(p.name.clone());
+        param_names.push(name.clone());
+        if p.ty.exists() {
+            BoxDoc::concat([
+                name,
+                BoxDoc::space(),
+                BoxDoc::text(c.types[p.ty].name.clone()),
+            ])
+            .group()
+        } else {
+            name
+        }
+    }));
+
+    ps.push(param_names);
+    let doc = apply(name, [params_doc, body.to_doc(c, ps)]);
+    ps.pop();
+    doc
+}
+
 impl Pretty for Expr {
-    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         match self {
             Expr::Atom { pred, args } => apply(
                 &c.predicates[*pred].name,
                 args.iter().map(|a| a.to_doc(c, ps)),
             ),
+
+            Expr::Inst { args, body } => pp_inst(c, ps, args, &c.exprs[*body]),
+
+            Expr::Forall { params, body } => {
+                pp_quantifier(c, ps, "forall", params, &c.exprs[*body])
+            }
+
+            Expr::Exists { params, body } => {
+                pp_quantifier(c, ps, "exists", params, &c.exprs[*body])
+            }
 
             Expr::Not { arg } => apply("not", [c.exprs[*arg].to_doc(c, ps)]),
             Expr::Eq { left, right } => apply("=", [left.to_doc(c, ps), right.to_doc(c, ps)]),
@@ -137,8 +196,14 @@ impl Pretty for Expr {
 }
 
 impl Pretty for Effect {
-    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         match self {
+            Effect::Inst { args, body } => pp_inst(c, ps, args, &c.effects[*body]),
+
+            Effect::Forall { params, body } => {
+                pp_quantifier(c, ps, "forall", params, &c.effects[*body])
+            }
+
             Effect::And { effects } => {
                 apply("and", effects.iter().map(|e| c.effects[*e].to_doc(c, ps)))
             }
@@ -166,7 +231,7 @@ impl Pretty for Effect {
 }
 
 impl Pretty for Action {
-    fn to_doc<'a, 'c>(&self, c: &'c Context, ps: &mut Vec<&'c [Param]>) -> BoxDoc<'a> {
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         BoxDoc::concat([
             BoxDoc::hardline(),
             BoxDoc::text("; Action"),
@@ -175,23 +240,11 @@ impl Pretty for Action {
                 ":action",
                 [
                     BoxDoc::text(self.name.clone()),
-                    if self.params.len() != self.args.len() {
-                        BoxDoc::concat([
-                            BoxDoc::text(":parameters"),
-                            BoxDoc::line(),
-                            list(self.params.iter().map(|p| p.to_doc(c, ps))),
-                        ])
-                    } else {
-                        BoxDoc::concat([
-                            BoxDoc::text(":arguments"),
-                            BoxDoc::line(),
-                            list(
-                                self.args
-                                    .iter()
-                                    .map(|k| BoxDoc::text(c.constants[*k].name.clone())),
-                            ),
-                        ])
-                    }
+                    BoxDoc::concat([
+                        BoxDoc::text(":parameters"),
+                        BoxDoc::line(),
+                        list(self.params.iter().map(|p| p.to_doc(c, ps))),
+                    ])
                     .nest(2),
                     BoxDoc::concat([
                         BoxDoc::text(":precondition"),

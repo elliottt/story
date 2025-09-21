@@ -41,6 +41,10 @@ fn used_effect_preds(
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
+        Effect::Inst { body, .. } | Effect::Forall { body, .. } => {
+            used_effect_preds(predicates, exprs, effects, *body);
+        }
+
         Effect::Atom { pred, .. } => {
             predicates[*pred].is_const = false;
         }
@@ -93,7 +97,7 @@ impl When {
 /// Remove the outer-most uses of `when` in the effects of an action. Mutates the action in-place
 /// so that it's left as the version that includes no uses of `when`.
 fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
-    let mut eff = std::mem::take(&mut context.effects[id]);
+    let mut eff = std::mem::replace(&mut context.effects[id], Effect::True);
     match &mut eff {
         &mut Effect::When { cond, effect } => {
             whens.push(When { cond, effect });
@@ -107,6 +111,11 @@ fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
             if effects.is_empty() {
                 return;
             }
+            context.effects[id] = eff;
+        }
+
+        // TODO: Unclear what to do here
+        Effect::Forall { .. } | Effect::Inst { .. } => {
             context.effects[id] = eff;
         }
 
@@ -192,34 +201,66 @@ fn nnf_action(context: &mut Context, action: &mut Action) {
 }
 
 fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
-    match &mut context.exprs[id] {
-        &mut Expr::Not { arg } => negate_expr(context, arg),
+    let mut expr = std::mem::replace(&mut context.exprs[id], Expr::True);
+    let new = match &mut expr {
+        Expr::Inst { body, .. } => {
+            *body = nnf_expr(context, *body);
+            id
+        }
+
+        Expr::Forall { body, .. } => {
+            *body = nnf_expr(context, *body);
+            id
+        }
+
+        Expr::Exists { body, .. } => {
+            *body = nnf_expr(context, *body);
+            id
+        }
+
+        Expr::Not { arg } => negate_expr(context, *arg),
 
         // There's nothing to be done for an atom, equality, true, or false.
         Expr::Atom { .. } | Expr::Eq { .. } | Expr::True | Expr::False => id,
 
         Expr::And { exprs } => {
-            let mut exprs = std::mem::take(exprs);
             for arg in exprs.iter_mut() {
                 *arg = nnf_expr(context, *arg);
             }
-            context.exprs[id] = Expr::And { exprs };
             id
         }
         Expr::Or { exprs } => {
-            let mut exprs = std::mem::take(exprs);
             for arg in exprs.iter_mut() {
                 *arg = nnf_expr(context, *arg);
             }
-            context.exprs[id] = Expr::Or { exprs };
             id
         }
-    }
+    };
+    context.exprs[id] = expr;
+    new
 }
 
 /// Negate an expression.
 fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
     match &context.exprs[id] {
+        Expr::Inst { args, body } => {
+            let args = args.clone();
+            let body = negate_expr(context, *body);
+            context.exprs.add(Expr::Inst { args, body })
+        }
+
+        Expr::Forall { params, body } => {
+            let params = params.clone();
+            let body = negate_expr(context, *body);
+            context.exprs.add(Expr::Exists { params, body })
+        }
+
+        Expr::Exists { params, body } => {
+            let params = params.clone();
+            let body = negate_expr(context, *body);
+            context.exprs.add(Expr::Forall { params, body })
+        }
+
         // We can't push negation down any further here.
         Expr::Atom { .. } | Expr::Eq { .. } => context.exprs.add(Expr::Not { arg: id }),
 

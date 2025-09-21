@@ -540,7 +540,6 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
         loc: name.loc,
         name: p.text(name.loc).to_owned(),
         params: Vec::new(),
-        args: Vec::new(),
         precond: Id::none(),
         effect: Id::none(),
     };

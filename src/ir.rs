@@ -118,6 +118,12 @@ pub struct Var {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
+    Inst { args: Vec<Id<Constant>>, body: Id<Expr> },
+
+    Forall { params: Vec<Param>, body: Id<Expr> },
+
+    Exists { params: Vec<Param>, body: Id<Expr> },
+
     Atom { pred: Id<Predicate>, args: Vec<Var> },
 
     Not { arg: Id<Expr> },
@@ -140,6 +146,17 @@ impl Default for Expr {
 
 #[derive(Clone, Debug)]
 pub enum Effect {
+    /// Instantiation of a forall. The forall will be replaced when the instantiation occurrs.
+    Inst {
+        args: Vec<Id<Constant>>,
+        body: Id<Effect>,
+    },
+
+    Forall {
+        params: Vec<Param>,
+        body: Id<Effect>,
+    },
+
     Atom {
         neg: bool,
         pred: Id<Predicate>,
@@ -178,11 +195,6 @@ pub struct Action {
     pub loc: crate::parser::Loc,
     pub name: String,
     pub params: Vec<Param>,
-
-    // When this is an instantiated action, this vector will have the same size as `params` but
-    // supply the constants that it is insantiated with.
-    pub args: Vec<Id<Constant>>,
-
     pub precond: Id<Expr>,
     pub effect: Id<Effect>,
 }
@@ -202,7 +214,15 @@ impl Action {
             instantiated.name += &c.constants[*arg].name;
         }
 
-        instantiated.args = args;
+        instantiated.precond = c.exprs.add(Expr::Inst {
+            args: args.clone(),
+            body: self.precond,
+        });
+
+        instantiated.effect = c.effects.add(Effect::Inst {
+            args,
+            body: self.effect,
+        });
 
         instantiated
     }
