@@ -536,11 +536,12 @@ fn parse_effect(
 
 fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()> {
     let name = p.expect(Token::Atom)?;
+    let mut params = Vec::new();
+    let mut precond = Id::none();
+    let mut effect = Id::none();
     let mut action = Action {
         loc: name.loc,
         name: p.text(name.loc).to_owned(),
-        params: Vec::new(),
-        precond: Id::none(),
         effect: Id::none(),
     };
 
@@ -556,14 +557,22 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
     while p.next_is(Token::Atom)? {
         let next = p.consume()?;
         match p.text(next.loc) {
-            ":parameters" => p.list(|p| parse_parameters(p, &context.types, &mut action.params))?,
+            ":parameters" => {
+                if params.is_empty() {
+                    p.list(|p| parse_parameters(p, &context.types, &mut params))?
+                }
+            }
 
             ":precondition" => {
-                action.precond = parse_expr(p, context, &action.params)?;
+                if !precond.exists() {
+                    precond = parse_expr(p, context, &params)?;
+                }
             }
 
             ":effect" => {
-                action.effect = parse_effect(p, context, &action.params)?;
+                if !effect.exists() {
+                    effect = parse_effect(p, context, &params)?;
+                }
             }
 
             _ => {
@@ -574,6 +583,12 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
             }
         }
     }
+
+    let when = context.effects.add(Effect::When {
+        cond: precond,
+        effect,
+    });
+    action.effect = context.effects.add(Effect::Forall { params, body: when });
 
     context.actions.add(action);
 

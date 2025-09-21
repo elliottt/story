@@ -89,13 +89,19 @@ impl Pretty for Ident {
 
 impl Pretty for Param {
     fn to_doc<'a>(&self, c: &Context, _ps: &mut Env<'a>) -> BoxDoc<'a> {
-        BoxDoc::group(BoxDoc::concat([
-            BoxDoc::text(self.name.clone()),
-            BoxDoc::space(),
-            BoxDoc::text("-"),
-            BoxDoc::space(),
-            BoxDoc::text(c.types[self.ty].name.clone()),
-        ]))
+        let name = BoxDoc::text(self.name.clone());
+        if self.ty.exists() {
+            BoxDoc::concat([
+                name,
+                BoxDoc::space(),
+                BoxDoc::text("-"),
+                BoxDoc::space(),
+                BoxDoc::text(c.types[self.ty].name.clone()),
+            ])
+            .group()
+        } else {
+            name
+        }
     }
 }
 
@@ -110,8 +116,7 @@ impl Pretty for Var {
                         continue;
                     }
 
-                    let rel = scope.len() - 1 - ix;
-                    return scope[rel].clone();
+                    return scope[usize::from(ix)].clone();
                 }
                 BoxDoc::text(format!("??{}", ix))
             }
@@ -149,16 +154,7 @@ fn pp_quantifier<'a, T: Pretty>(
     let params_doc = list(params.iter().map(|p| {
         let name = BoxDoc::text(p.name.clone());
         param_names.push(name.clone());
-        if p.ty.exists() {
-            BoxDoc::concat([
-                name,
-                BoxDoc::space(),
-                BoxDoc::text(c.types[p.ty].name.clone()),
-            ])
-            .group()
-        } else {
-            name
-        }
+        p.to_doc(c, ps)
     }));
 
     ps.push(param_names);
@@ -240,18 +236,6 @@ impl Pretty for Action {
                 ":action",
                 [
                     BoxDoc::text(self.name.clone()),
-                    BoxDoc::concat([
-                        BoxDoc::text(":parameters"),
-                        BoxDoc::line(),
-                        list(self.params.iter().map(|p| p.to_doc(c, ps))),
-                    ])
-                    .nest(2),
-                    BoxDoc::concat([
-                        BoxDoc::text(":precondition"),
-                        BoxDoc::line(),
-                        c.exprs[self.precond].to_doc(c, ps),
-                    ])
-                    .nest(2),
                     BoxDoc::concat([
                         BoxDoc::text(":effect"),
                         BoxDoc::line(),

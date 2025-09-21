@@ -118,21 +118,42 @@ pub struct Var {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Inst { args: Vec<Id<Constant>>, body: Id<Expr> },
+    Inst {
+        args: Vec<Id<Constant>>,
+        body: Id<Expr>,
+    },
 
-    Forall { params: Vec<Param>, body: Id<Expr> },
+    Forall {
+        params: Vec<Param>,
+        body: Id<Expr>,
+    },
 
-    Exists { params: Vec<Param>, body: Id<Expr> },
+    Exists {
+        params: Vec<Param>,
+        body: Id<Expr>,
+    },
 
-    Atom { pred: Id<Predicate>, args: Vec<Var> },
+    Atom {
+        pred: Id<Predicate>,
+        args: Vec<Var>,
+    },
 
-    Not { arg: Id<Expr> },
+    Not {
+        arg: Id<Expr>,
+    },
 
-    Eq { left: Var, right: Var },
+    Eq {
+        left: Var,
+        right: Var,
+    },
 
-    And { exprs: Vec<Id<Expr>> },
+    And {
+        exprs: Vec<Id<Expr>>,
+    },
 
-    Or { exprs: Vec<Id<Expr>> },
+    Or {
+        exprs: Vec<Id<Expr>>,
+    },
 
     True,
     False,
@@ -184,6 +205,17 @@ impl Effect {
     }
 }
 
+impl Id<Effect> {
+    pub fn instantiate(self, c: &mut Context, args: Vec<Id<Constant>>) -> Self {
+        let body = match &c.effects[self] {
+            Effect::Forall { body, .. } => *body,
+            _ => self,
+        };
+
+        c.effects.add(Effect::Inst { args, body })
+    }
+}
+
 impl Default for Effect {
     fn default() -> Self {
         Effect::True
@@ -194,8 +226,6 @@ impl Default for Effect {
 pub struct Action {
     pub loc: crate::parser::Loc,
     pub name: String,
-    pub params: Vec<Param>,
-    pub precond: Id<Expr>,
     pub effect: Id<Effect>,
 }
 
@@ -214,15 +244,7 @@ impl Action {
             instantiated.name += &c.constants[*arg].name;
         }
 
-        instantiated.precond = c.exprs.add(Expr::Inst {
-            args: args.clone(),
-            body: self.precond,
-        });
-
-        instantiated.effect = c.effects.add(Effect::Inst {
-            args,
-            body: self.effect,
-        });
+        instantiated.effect = self.effect.instantiate(c, args);
 
         instantiated
     }

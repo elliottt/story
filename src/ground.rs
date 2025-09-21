@@ -88,9 +88,42 @@ struct When {
 impl When {
     fn extend(self, context: &mut Context, action: &Action) -> Action {
         let mut copy = action.clone();
-        copy.precond = Expr::and(context, [action.precond, self.cond]);
-        copy.effect = Effect::and(context, [action.effect, self.effect]);
-        copy
+        let mut outer = context.effects[copy.effect].clone();
+        match &mut outer {
+            Effect::Forall { body, .. } | Effect::Inst { body, .. } => {
+                let mut inner = context.effects[*body].clone();
+                match &mut inner {
+                    Effect::When { cond, effect } => {
+                        *cond = Expr::and(context, [*cond, self.cond]);
+                        *effect = Effect::and(context, [*effect, self.effect]);
+                    }
+
+                    _ => {
+                        inner = Effect::When {
+                            cond: self.cond,
+                            effect: Effect::and(context, [copy.effect, self.effect]),
+                        }
+                    }
+                }
+                *body = context.effects.add(inner);
+            }
+
+            Effect::When { cond, effect } => {
+                *cond = Expr::and(context, [*cond, self.cond]);
+                *effect = Effect::and(context, [*effect, self.effect]);
+            }
+
+            _ => {
+                outer = Effect::When {
+                    cond: self.cond,
+                    effect: Effect::and(context, [copy.effect, self.effect]),
+                }
+            }
+        }
+
+        copy.effect = context.effects.add(outer);
+
+        return copy;
     }
 }
 
@@ -144,7 +177,10 @@ fn instantiate_actions(context: &mut Context) {
     }
 
     for action in std::mem::take(&mut context.actions).drain() {
-        let param_tys = Vec::from_iter(action.params.iter().map(|p| p.ty));
+        let param_tys = match &context.effects[action.effect] {
+            Effect::Forall { params, .. } => Vec::from_iter(params.iter().map(|p| p.ty)),
+            _ => continue,
+        };
 
         // If this action has any parameters whose type is uninhabited, we can skip specializing it
         // at all.
@@ -196,8 +232,33 @@ fn nnf_context(context: &mut Context) {
 
 /// Put an [`Action`] into negation normal form.
 fn nnf_action(context: &mut Context, action: &mut Action) {
-    action.precond = nnf_expr(context, action.precond);
-    // action.effect = nnf_expr(context, action.effect);
+    action.effect = nnf_effect(context, action.effect);
+}
+
+/// Effects are already in negation normal form, but the expressions held within a `when` might not
+/// be.
+fn nnf_effect(c: &mut Context, id: Id<Effect>) -> Id<Effect> {
+    let mut effect = std::mem::replace(&mut c.effects[id], Effect::True);
+    match &mut effect {
+        Effect::Inst { body, .. } | Effect::Forall { body, .. } => {
+            *body = nnf_effect(c, *body);
+        }
+
+        Effect::When { cond, effect } => {
+            *cond = nnf_expr(c, *cond);
+            *effect = nnf_effect(c, *effect);
+        }
+
+        Effect::And { effects } => {
+            for effect in effects.iter_mut() {
+                *effect = nnf_effect(c, *effect);
+            }
+        }
+
+        Effect::Atom { .. } | Effect::True => {}
+    }
+    c.effects[id] = effect;
+    id
 }
 
 fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {

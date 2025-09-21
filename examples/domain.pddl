@@ -20,17 +20,17 @@
     (scared ?who - character)
   )
 
-  (:action travel
-    :parameters (?actor - character ?from ?to - location)
-    :precondition
-      (and (at-location ?actor ?from)
-           (not (or (= ?from ?to) (injured ?actor)))
-           (alive ?actor)
-           (conscious ?actor)
-           (or (connected ?from ?to) (connected ?to ?from)))
-    :effect
-      (and (at-location ?actor ?to)
-           (not (at-location ?actor ?from))))
+  ;; (:action travel
+  ;;   :parameters (?actor - character ?from ?to - location)
+  ;;   :precondition
+  ;;     (and (at-location ?actor ?from)
+  ;;          (not (or (= ?from ?to) (injured ?actor)))
+  ;;          (alive ?actor)
+  ;;          (conscious ?actor)
+  ;;          (or (connected ?from ?to) (connected ?to ?from)))
+  ;;   :effect
+  ;;     (and (at-location ?actor ?to)
+  ;;          (not (at-location ?actor ?from))))
 
   (:action intimidate
     :parameters
