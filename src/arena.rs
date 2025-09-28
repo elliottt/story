@@ -78,6 +78,10 @@ impl<T: 'static> Arena<T> {
         Self { elems: Vec::new() }
     }
 
+    pub fn reserve(&mut self, size: usize) {
+        self.elems.reserve(size);
+    }
+
     pub fn add(&mut self, elem: T) -> Id<T> {
         let index = self.elems.len();
         self.elems.push(elem);
@@ -158,6 +162,10 @@ impl<T: Named> NamedArena<T> {
             elems: Arena::new(),
             names: HashMap::new(),
         }
+    }
+
+    pub fn reserve(&mut self, size: usize) {
+        self.elems.reserve(size);
     }
 
     pub fn len(&self) -> usize {

@@ -269,7 +269,7 @@ impl Instantiate {
             Expr::Eq { neg, left, right } => {
                 let sleft = self.from_var(left).expect("Unbound parameter");
                 let sright = self.from_var(right).expect("Unbound parameter");
-                if *neg == (sleft.kind == sright.kind) {
+                if *neg == (sleft.kind != sright.kind) {
                     self.t
                 } else {
                     self.f

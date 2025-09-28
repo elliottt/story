@@ -1,0 +1,196 @@
+use crate::{
+    arena::{Arena, Id},
+    ir::{self, Action, Context, Expr},
+};
+use std::collections::{HashMap, HashSet};
+
+#[derive(Debug)]
+pub struct Graph<'a> {
+    c: &'a Context,
+    facts: Arena<Fact>,
+    effects: Arena<Effect>,
+}
+
+impl<'a> Graph<'a> {
+    pub fn build(c: &'a mut Context) -> Self {
+        let mut builder = GraphBuilder {
+            atom_map: AtomMap::new(),
+            facts: Arena::new(),
+            effects: Arena::new(),
+        };
+
+        builder.effects.reserve(c.actions.len());
+
+        for (id, action) in c.actions.iter_with_id() {
+            builder.add_action(c, id, action);
+        }
+
+        // TODO: process init and goal to ensure that those atoms make it into the graph
+
+        builder.build(c)
+    }
+}
+
+/// The level that an action or fact was enabled at.
+#[derive(Debug)]
+struct Level {
+    level: u16,
+}
+
+impl Level {
+    const INVALID: Self = Level { level: u16::MAX };
+}
+
+type AtomMap<T> = HashMap<Id<ir::Predicate>, HashMap<Vec<Id<ir::Constant>>, T>>;
+
+#[derive(Debug)]
+struct GroundedAtom {
+    pred: Id<ir::Predicate>,
+    args: Vec<Id<ir::Constant>>,
+}
+
+#[derive(Debug)]
+struct Fact {
+    atom: GroundedAtom,
+    level: Level,
+    enabled: bool,
+    dirty: bool,
+
+    required_by: HashSet<Id<Effect>>,
+    added_by: HashSet<Id<Effect>>,
+    deleted_by: HashSet<Id<Effect>>,
+}
+
+#[derive(Debug)]
+struct Effect {
+    action: Id<ir::Action>,
+    level: Level,
+    enabled: bool,
+    dirty: bool,
+
+    /// The number of preconditions this effect has.
+    total_pre: u16,
+
+    /// The number of active preconditions this effect has.
+    active_pre: u16,
+
+    adds: HashSet<Id<Fact>>,
+    dels: HashSet<Id<Fact>>,
+}
+
+struct GraphBuilder {
+    atom_map: AtomMap<Id<Fact>>,
+    facts: Arena<Fact>,
+    effects: Arena<Effect>,
+}
+
+impl GraphBuilder {
+    fn build(self, c: &Context) -> Graph<'_> {
+        Graph {
+            c,
+            facts: self.facts,
+            effects: self.effects,
+        }
+    }
+
+    fn add_fact(&mut self, atom: &ir::Atom) -> Id<Fact> {
+        let args = Vec::from_iter(atom.args.iter().map(|var| var.kind.unwrap_const()));
+        let preds = self.atom_map.entry(atom.pred).or_default();
+        if let Some(id) = preds.get(&args) {
+            *id
+        } else {
+            let id = self.facts.add(Fact {
+                atom: GroundedAtom {
+                    pred: atom.pred,
+                    args: args.clone(),
+                },
+                level: Level::INVALID,
+                enabled: false,
+                dirty: false,
+                required_by: HashSet::new(),
+                added_by: HashSet::new(),
+                deleted_by: HashSet::new(),
+            });
+            preds.insert(args, id);
+            id
+        }
+    }
+
+    fn add_action(&mut self, c: &Context, id: Id<Action>, action: &Action) -> Id<Effect> {
+        let eid = self.effects.add(Effect {
+            action: id,
+            level: Level::INVALID,
+            enabled: false,
+            dirty: false,
+            total_pre: 0,
+            active_pre: 0,
+            adds: HashSet::new(),
+            dels: HashSet::new(),
+        });
+
+        let mut preconds = HashSet::new();
+        self.process_pre(&mut preconds, c, action.pre);
+        for id in &preconds {
+            self.facts[*id].required_by.insert(eid);
+        }
+        self.effects[eid].total_pre = u16::try_from(preconds.len()).unwrap();
+
+        let mut adds = HashSet::new();
+        let mut dels = HashSet::new();
+        self.process_adds_dels(&mut adds, &mut dels, c, action.effect);
+
+        for id in &adds {
+            self.facts[*id].added_by.insert(eid);
+        }
+        for id in &dels {
+            self.facts[*id].deleted_by.insert(eid);
+        }
+
+        self.effects[eid].adds = adds;
+        self.effects[eid].dels = dels;
+
+        eid
+    }
+
+    fn process_pre(&mut self, preconds: &mut HashSet<Id<Fact>>, c: &Context, e: Id<Expr>) {
+        match &c.exprs[e] {
+            Expr::Atom { atom, .. } => {
+                preconds.insert(self.add_fact(&c.atoms[*atom]));
+            }
+            Expr::Eq { .. } => {
+                panic!("Equality should have been eliminated before graph building");
+            }
+            Expr::And { exprs } => {
+                for e in exprs {
+                    self.process_pre(preconds, c, *e);
+                }
+            }
+            Expr::True | Expr::False => {}
+        }
+    }
+
+    fn process_adds_dels(
+        &mut self,
+        adds: &mut HashSet<Id<Fact>>,
+        dels: &mut HashSet<Id<Fact>>,
+        c: &Context,
+        id: Id<ir::Effect>,
+    ) {
+        match &c.effects[id] {
+            ir::Effect::Atom { neg, atom } => {
+                let fact = self.add_fact(&c.atoms[*atom]);
+                if *neg {
+                    dels.insert(fact);
+                } else {
+                    adds.insert(fact);
+                }
+            }
+            ir::Effect::And { effects } => {
+                for id in effects {
+                    self.process_adds_dels(adds, dels, c, *id);
+                }
+            }
+            ir::Effect::True => {}
+        }
+    }
+}

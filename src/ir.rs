@@ -120,6 +120,13 @@ pub enum VarKind {
 
 impl VarKind {
     pub const INVALID_PARAM: u16 = u16::MAX;
+
+    pub fn unwrap_const(&self) -> Id<Constant> {
+        match self {
+            VarKind::Param { .. } => panic!("Unexpected param"),
+            VarKind::Const { id } => *id,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -137,20 +144,11 @@ pub struct Atom {
 
 #[derive(Clone, Debug)]
 pub enum Expr {
-    Atom {
-        neg: bool,
-        atom: Id<Atom>,
-    },
+    Atom { neg: bool, atom: Id<Atom> },
 
-    Eq {
-        neg: bool,
-        left: Var,
-        right: Var,
-    },
+    Eq { neg: bool, left: Var, right: Var },
 
-    And {
-        exprs: Vec<Id<Expr>>,
-    },
+    And { exprs: Vec<Id<Expr>> },
 
     True,
     False,
@@ -158,14 +156,9 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub enum Effect {
-    Atom {
-        neg: bool,
-        atom: Id<Atom>,
-    },
+    Atom { neg: bool, atom: Id<Atom> },
 
-    And {
-        effects: Vec<Id<Effect>>,
-    },
+    And { effects: Vec<Id<Effect>> },
 
     // NOTE: These would probably be better to reserve in the effect arena and have a canonical
     // value instead of making it show up all over the place, but it's also a really convenient
