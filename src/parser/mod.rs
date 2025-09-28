@@ -8,8 +8,8 @@ use crate::{
     File, Files,
     arena::Id,
     ir::{
-        Action, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate, Type, Var,
-        VarKind,
+        Action, Atom, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate, Type,
+        Var, VarKind,
     },
 };
 use lexer::Token;
@@ -336,7 +336,7 @@ fn parse_atom(
     context: &mut Context,
     params: &[Param],
     next: lexer::Lexeme,
-) -> parser::Result<Option<(Id<Predicate>, Vec<Var>)>> {
+) -> parser::Result<Option<Atom>> {
     let text = p.text(next.loc);
     let pred = if let Some(pred) = context.predicates.get(text) {
         pred
@@ -409,7 +409,7 @@ fn parse_atom(
         }
     }
 
-    Result::Ok(Some((pred, args)))
+    Result::Ok(Some(Atom { pred, args }))
 }
 
 fn parse_var(p: &mut Parser<'_>, context: &mut Context, params: &[Param]) -> parser::Result<Var> {
@@ -477,8 +477,8 @@ fn parse_expr(
             }
 
             _ => {
-                if let Some((pred, args)) = parse_atom(p, context, params, next)? {
-                    Result::Ok(context.exprs.add(Expr::Atom { pred, args }))
+                if let Some(atom) = parse_atom(p, context, params, next)? {
+                    Result::Ok(context.exprs.add(Expr::Atom { atom }))
                 } else {
                     Result::Ok(Id::none())
                 }
@@ -502,12 +502,8 @@ fn parse_effect(
             }
             "not" => p.list(|p| {
                 let next = p.expect(Token::Atom)?;
-                if let Some((pred, args)) = parse_atom(p, context, params, next)? {
-                    Result::Ok(context.effects.add(Effect::Atom {
-                        neg: true,
-                        pred,
-                        args,
-                    }))
+                if let Some(atom) = parse_atom(p, context, params, next)? {
+                    Result::Ok(context.effects.add(Effect::Atom { neg: true, atom }))
                 } else {
                     Result::Ok(Id::none())
                 }
@@ -520,12 +516,8 @@ fn parse_effect(
                 Result::Ok(context.effects.add(Effect::And { effects }))
             }
             _ => {
-                if let Some((pred, args)) = parse_atom(p, context, params, next)? {
-                    Result::Ok(context.effects.add(Effect::Atom {
-                        neg: false,
-                        pred,
-                        args,
-                    }))
+                if let Some(atom) = parse_atom(p, context, params, next)? {
+                    Result::Ok(context.effects.add(Effect::Atom { neg: false, atom }))
                 } else {
                     Result::Ok(Id::none())
                 }

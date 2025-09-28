@@ -46,8 +46,8 @@ fn used_effect_preds(
             used_effect_preds(predicates, exprs, effects, *body);
         }
 
-        Effect::Atom { pred, .. } => {
-            predicates[*pred].is_const = false;
+        Effect::Atom { atom, .. } => {
+            predicates[atom.pred].is_const = false;
         }
         // NOTE: we ignore the condition in a `when` clause, as it is treated as a secondary
         // precondition of the action.

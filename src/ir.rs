@@ -116,6 +116,13 @@ pub struct Var {
     pub kind: VarKind,
 }
 
+/// An atomic formula.
+#[derive(Clone, Debug)]
+pub struct Atom {
+    pub pred: Id<Predicate>,
+    pub args: Vec<Var>,
+}
+
 #[derive(Clone, Debug)]
 pub enum Expr {
     Inst {
@@ -134,8 +141,7 @@ pub enum Expr {
     },
 
     Atom {
-        pred: Id<Predicate>,
-        args: Vec<Var>,
+        atom: Atom,
     },
 
     Not {
@@ -174,8 +180,7 @@ pub enum Effect {
 
     Atom {
         neg: bool,
-        pred: Id<Predicate>,
-        args: Vec<Var>,
+        atom: Atom,
     },
 
     When {

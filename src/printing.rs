@@ -1,7 +1,7 @@
 use pretty::BoxDoc;
 
 use crate::ir::{
-    Action, Constant, Context, Effect, Expr, Id, Ident, Param, Predicate, Var, VarKind,
+    Action, Atom, Constant, Context, Effect, Expr, Id, Ident, Param, Predicate, Var, VarKind,
 };
 
 pub fn print_context(c: &Context) -> String {
@@ -148,13 +148,19 @@ fn pp_quantifier<'a, T: Pretty>(
     doc
 }
 
+impl Pretty for Atom {
+    fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
+        apply(
+            c.predicates[self.pred].name.as_str(),
+            self.args.iter().map(|a| a.to_doc(c, ps)),
+        )
+    }
+}
+
 impl Pretty for Expr {
     fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         match self {
-            Expr::Atom { pred, args } => apply(
-                &c.predicates[*pred].name,
-                args.iter().map(|a| a.to_doc(c, ps)),
-            ),
+            Expr::Atom { atom } => atom.to_doc(c, ps),
 
             Expr::Inst { args, body } => pp_inst(c, ps, args, &c.exprs[*body]),
 
@@ -188,17 +194,8 @@ impl Pretty for Effect {
             Effect::And { effects } => {
                 apply("and", effects.iter().map(|e| c.effects[*e].to_doc(c, ps)))
             }
-            Effect::Atom { neg, pred, args } if *neg => {
-                let pred = apply(
-                    &c.predicates[*pred].name,
-                    args.iter().map(|a| a.to_doc(c, ps)),
-                );
-                apply("not", [pred])
-            }
-            Effect::Atom { pred, args, .. } => apply(
-                &c.predicates[*pred].name,
-                args.iter().map(|a| a.to_doc(c, ps)),
-            ),
+            Effect::Atom { neg, atom } if *neg => apply("not", [atom.to_doc(c, ps)]),
+            Effect::Atom { atom, .. } => atom.to_doc(c, ps),
             Effect::When { cond, effect } => apply(
                 "when",
                 [
