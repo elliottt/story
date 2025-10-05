@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     arena::Id,
     eval,
-    ir::{Action, And, Arena, Constant, Context, Effect, Expr, NamedArena, Predicate, Type},
+    ir::{Action, And, Arena, Atom, Constant, Context, Effect, Expr, NamedArena, Predicate, Type},
 };
 
 pub fn ground(context: &mut Context) {
@@ -28,6 +28,7 @@ fn determine_const_predicates(context: &mut Context) {
     for action in context.actions.iter() {
         used_effect_preds(
             &mut context.predicates,
+            &context.atoms,
             &context.exprs,
             &context.effects,
             action.effect,
@@ -37,26 +38,27 @@ fn determine_const_predicates(context: &mut Context) {
 
 fn used_effect_preds(
     predicates: &mut NamedArena<Predicate>,
+    atoms: &Arena<Atom>,
     exprs: &Arena<Expr>,
     effects: &Arena<Effect>,
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
         Effect::Inst { body, .. } | Effect::Forall { body, .. } => {
-            used_effect_preds(predicates, exprs, effects, *body);
+            used_effect_preds(predicates, atoms, exprs, effects, *body);
         }
 
         Effect::Atom { atom, .. } => {
-            predicates[atom.pred].is_const = false;
+            predicates[atoms[*atom].pred].is_const = false;
         }
         // NOTE: we ignore the condition in a `when` clause, as it is treated as a secondary
         // precondition of the action.
         Effect::When { effect, .. } => {
-            used_effect_preds(predicates, exprs, effects, *effect);
+            used_effect_preds(predicates, atoms, exprs, effects, *effect);
         }
         Effect::And { effects: es } => {
             for eff in es.iter().copied() {
-                used_effect_preds(predicates, exprs, effects, eff);
+                used_effect_preds(predicates, atoms, exprs, effects, eff);
             }
         }
         Effect::True => {}
@@ -348,7 +350,7 @@ fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
             for arg in args.iter_mut() {
                 *arg = negate_expr(context, *arg);
             }
-            context.exprs.add(Expr::And { exprs: args })
+            Expr::and(context, args)
         }
 
         Expr::True => context.exprs.add(Expr::False),

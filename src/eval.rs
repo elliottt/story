@@ -1,4 +1,4 @@
-use crate::ir::{Constant, Context, Effect, Expr, Id, Param, Var, VarKind};
+use crate::ir::{And, Constant, Context, Effect, Expr, Id, Param, Var, VarKind};
 
 type Env = Vec<Vec<Id<Constant>>>;
 
@@ -127,11 +127,7 @@ impl Simplify {
                 if !changed {
                     id
                 } else {
-                    if seffects.is_empty() {
-                        c.effects.add(Effect::True)
-                    } else {
-                        c.effects.add(Effect::And { effects: seffects })
-                    }
+                    Effect::and(c, seffects)
                 }
             }
 
@@ -234,7 +230,7 @@ impl Simplify {
                     if sexprs.is_empty() {
                         self.t
                     } else {
-                        c.exprs.add(Expr::And { exprs: sexprs })
+                        Expr::and(c, sexprs)
                     }
                 }
             }

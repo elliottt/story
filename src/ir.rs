@@ -5,6 +5,7 @@ pub struct Context {
     pub domain_name: Ident,
     pub problem_name: Ident,
     pub constants: Arena<Constant>,
+    pub atoms: Arena<Atom>,
     pub exprs: Arena<Expr>,
     pub effects: Arena<Effect>,
     pub types: NamedArena<Type>,
@@ -28,7 +29,12 @@ impl And for Expr {
                 conjuncts.push(e);
             }
         }
-        c.exprs.add(Expr::And { exprs: conjuncts })
+
+        match conjuncts.len() {
+            0 => c.exprs.add(Expr::True),
+            1 => conjuncts[0],
+            _ => c.exprs.add(Expr::And { exprs: conjuncts }),
+        }
     }
 }
 
@@ -42,7 +48,11 @@ impl And for Effect {
                 conjuncts.push(e);
             }
         }
-        c.effects.add(Effect::And { effects: conjuncts })
+        match conjuncts.len() {
+            0 => c.effects.add(Effect::True),
+            1 => conjuncts[0],
+            _ => c.effects.add(Effect::And { effects: conjuncts }),
+        }
     }
 }
 
@@ -100,7 +110,7 @@ pub struct Ident {
     pub name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum VarKind {
     Param { ix: u16 },
     Const { id: Id<Constant> },
@@ -141,7 +151,7 @@ pub enum Expr {
     },
 
     Atom {
-        atom: Atom,
+        atom: Id<Atom>,
     },
 
     Not {
@@ -180,7 +190,7 @@ pub enum Effect {
 
     Atom {
         neg: bool,
-        atom: Atom,
+        atom: Id<Atom>,
     },
 
     When {

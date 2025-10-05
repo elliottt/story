@@ -336,7 +336,7 @@ fn parse_atom(
     context: &mut Context,
     params: &[Param],
     next: lexer::Lexeme,
-) -> parser::Result<Option<Atom>> {
+) -> parser::Result<Option<Id<Atom>>> {
     let text = p.text(next.loc);
     let pred = if let Some(pred) = context.predicates.get(text) {
         pred
@@ -409,7 +409,7 @@ fn parse_atom(
         }
     }
 
-    Result::Ok(Some(Atom { pred, args }))
+    Result::Ok(Some(context.atoms.add(Atom { pred, args })))
 }
 
 fn parse_var(p: &mut Parser<'_>, context: &mut Context, params: &[Param]) -> parser::Result<Var> {

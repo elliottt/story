@@ -160,7 +160,7 @@ impl Pretty for Atom {
 impl Pretty for Expr {
     fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
         match self {
-            Expr::Atom { atom } => atom.to_doc(c, ps),
+            Expr::Atom { atom } => c.atoms[*atom].to_doc(c, ps),
 
             Expr::Inst { args, body } => pp_inst(c, ps, args, &c.exprs[*body]),
 
@@ -194,8 +194,8 @@ impl Pretty for Effect {
             Effect::And { effects } => {
                 apply("and", effects.iter().map(|e| c.effects[*e].to_doc(c, ps)))
             }
-            Effect::Atom { neg, atom } if *neg => apply("not", [atom.to_doc(c, ps)]),
-            Effect::Atom { atom, .. } => atom.to_doc(c, ps),
+            Effect::Atom { neg, atom } if *neg => apply("not", [c.atoms[*atom].to_doc(c, ps)]),
+            Effect::Atom { atom, .. } => c.atoms[*atom].to_doc(c, ps),
             Effect::When { cond, effect } => apply(
                 "when",
                 [
