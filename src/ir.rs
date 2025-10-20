@@ -21,37 +21,37 @@ pub trait And: Sized {
 
 impl And for Expr {
     fn and(c: &mut Context, es: impl IntoIterator<Item = Id<Self>>) -> Id<Self> {
-        let mut conjuncts = Vec::new();
+        let mut exprs = Vec::new();
         for e in es.into_iter() {
-            if let Expr::And { exprs } = &c.exprs[e] {
-                conjuncts.extend(exprs.iter().copied());
+            if let Expr::And { exprs: es } = &c.exprs[e] {
+                exprs.extend(es.iter().copied());
             } else {
-                conjuncts.push(e);
+                exprs.push(e);
             }
         }
 
-        match conjuncts.len() {
+        match exprs.len() {
             0 => c.exprs.add(Expr::True),
-            1 => conjuncts[0],
-            _ => c.exprs.add(Expr::And { exprs: conjuncts }),
+            1 => exprs[0],
+            _ => c.exprs.add(Expr::And { exprs }),
         }
     }
 }
 
 impl And for Effect {
     fn and(c: &mut Context, es: impl IntoIterator<Item = Id<Self>>) -> Id<Self> {
-        let mut conjuncts = Vec::new();
+        let mut effects = Vec::new();
         for e in es.into_iter() {
-            if let Effect::And { effects } = &c.effects[e] {
-                conjuncts.extend(effects.iter().copied());
+            if let Effect::And { effects: es } = &c.effects[e] {
+                effects.extend(es.iter().copied());
             } else {
-                conjuncts.push(e);
+                effects.push(e);
             }
         }
-        match conjuncts.len() {
+        match effects.len() {
             0 => c.effects.add(Effect::True),
-            1 => conjuncts[0],
-            _ => c.effects.add(Effect::And { effects: conjuncts }),
+            1 => effects[0],
+            _ => c.effects.add(Effect::And { effects }),
         }
     }
 }
@@ -173,6 +173,25 @@ pub enum Expr {
 
     True,
     False,
+}
+
+impl Expr {
+    pub fn or(c: &mut Context, es: impl IntoIterator<Item = Id<Self>>) -> Id<Self> {
+        let mut exprs = Vec::new();
+        for e in es.into_iter() {
+            if let Expr::Or { exprs: es } = &c.exprs[e] {
+                exprs.extend(es.iter().copied());
+            } else {
+                exprs.push(e);
+            }
+        }
+
+        match exprs.len() {
+            0 => c.exprs.add(Expr::False),
+            1 => exprs[0],
+            _ => c.exprs.add(Expr::Or { exprs }),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]

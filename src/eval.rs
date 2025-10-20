@@ -263,7 +263,7 @@ impl Simplify {
                     if sexprs.is_empty() {
                         self.f
                     } else {
-                        c.exprs.add(Expr::Or { exprs: sexprs })
+                        Expr::or(c, sexprs)
                     }
                 }
             }
