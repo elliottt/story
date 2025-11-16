@@ -26,23 +26,31 @@ pub fn print_context(c: &Context) -> String {
     String::from_utf8(w).unwrap()
 }
 
+pub fn show(c: &Context, e: &impl Pretty) -> String {
+    let mut ps = Vec::with_capacity(2);
+    let doc = e.to_doc(c, &mut ps);
+    let mut w = Vec::new();
+    doc.render(80, &mut w).unwrap();
+    String::from_utf8(w).unwrap()
+}
+
 fn list<'a>(ts: impl IntoIterator<Item = BoxDoc<'a>>) -> BoxDoc<'a> {
     let args = BoxDoc::intersperse(ts, BoxDoc::line()).append(BoxDoc::text(")"));
     BoxDoc::text("(").append(BoxDoc::group(args).nest(2))
 }
 
-fn apply<'a>(fun: &str, ts: impl IntoIterator<Item = BoxDoc<'a>>) -> BoxDoc<'a> {
+fn apply_with_name<'a>(fun: BoxDoc<'a>, ts: impl IntoIterator<Item = BoxDoc<'a>>) -> BoxDoc<'a> {
     let mut args = BoxDoc::nil();
     for p in ts.into_iter() {
         args = args.append(BoxDoc::line()).append(p);
     }
     args = args.append(BoxDoc::text(")"));
 
-    BoxDoc::concat([
-        BoxDoc::text("("),
-        BoxDoc::text(fun.to_owned()),
-        BoxDoc::group(args).nest(2),
-    ])
+    BoxDoc::concat([BoxDoc::text("("), fun, BoxDoc::group(args).nest(2)])
+}
+
+fn apply<'a>(fun: &str, ts: impl IntoIterator<Item = BoxDoc<'a>>) -> BoxDoc<'a> {
+    apply_with_name(BoxDoc::text(fun.to_owned()), ts)
 }
 
 pub type Env<'a> = Vec<Vec<BoxDoc<'a>>>;
@@ -60,9 +68,20 @@ impl Pretty for Predicate {
             } else {
                 BoxDoc::text("predicate")
             },
+            if self.is_negated {
+                BoxDoc::text(", negated")
+            } else {
+                BoxDoc::nil()
+            },
             BoxDoc::hardline(),
             apply(&self.name, self.params.iter().map(|p| p.to_doc(c, ps))),
         ])
+    }
+}
+
+impl Pretty for Constant {
+    fn to_doc<'a>(&self, _c: &Context, _ps: &mut Env<'a>) -> BoxDoc<'a> {
+        BoxDoc::text(self.name.clone())
     }
 }
 
@@ -150,10 +169,13 @@ fn pp_quantifier<'a, T: Pretty>(
 
 impl Pretty for Atom {
     fn to_doc<'a>(&self, c: &Context, ps: &mut Env<'a>) -> BoxDoc<'a> {
-        apply(
-            c.predicates[self.pred].name.as_str(),
-            self.args.iter().map(|a| a.to_doc(c, ps)),
-        )
+        let pred = &c.predicates[self.pred];
+        let fun = if pred.is_negated {
+            BoxDoc::text(format!("[negated]{}", pred.name))
+        } else {
+            BoxDoc::text(pred.name.clone())
+        };
+        apply_with_name(fun, self.args.iter().map(|a| a.to_doc(c, ps)))
     }
 }
 

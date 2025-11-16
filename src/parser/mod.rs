@@ -297,6 +297,7 @@ fn parse_predicates(
                 name: p.text(next.loc).to_owned(),
                 params: Vec::new(),
                 is_const: false,
+                is_negated: false,
             };
 
             parse_parameters(p, types, &mut prop.params)?;

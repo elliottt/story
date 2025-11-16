@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     arena::Id,
@@ -16,7 +16,11 @@ pub fn ground(context: &mut Context) {
     // Remove parameters by instantiating all actions
     instantiate_actions(context);
 
+    // Put the context into negation normal form
     nnf_context(context);
+
+    // Introduce copies of predicates used as negative preconditions
+    remove_negative_preconditions(context)
 }
 
 fn determine_const_predicates(context: &mut Context) {
@@ -357,4 +361,234 @@ fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
 
         Expr::False => context.exprs.add(Expr::True),
     }
+}
+
+fn remove_negative_preconditions(c: &mut Context) {
+    let mut ps = NegativePreconds::new();
+    for action in c.actions.iter() {
+        ps.from_effect(c, action.effect);
+    }
+
+    let mut negatives = NegatedPreds::new();
+    for id in ps.into_preds() {
+        let mut copy = c.predicates[id].clone();
+        copy.is_negated = true;
+        negatives.insert(id, c.predicates.add(copy));
+    }
+
+    // If there weren't any negative preconditions, we can exit early.
+    if negatives.is_empty() {
+        return;
+    }
+
+    // Otherwise, we rewrite for mutual exclusion in the effects, and remove negations in favor of
+    // using the negated veresions in the preconditions.
+    let mut actions = std::mem::take(&mut c.actions);
+    for action in actions.iter_mut() {
+        action.effect = translate_negative_effects(&negatives, c, action.effect);
+    }
+    c.actions = actions;
+}
+
+type NegatedPreds = HashMap<Id<Predicate>, Id<Predicate>>;
+
+struct NegativePreconds {
+    /// Predicates used as negative preconditions.
+    preconds: HashSet<Id<Predicate>>,
+}
+
+impl NegativePreconds {
+    fn new() -> Self {
+        NegativePreconds {
+            preconds: HashSet::new(),
+        }
+    }
+
+    fn into_preds(self) -> Vec<Id<Predicate>> {
+        Vec::from_iter(self.preconds.into_iter())
+    }
+
+    fn from_effect(&mut self, c: &Context, id: Id<Effect>) {
+        match &c.effects[id] {
+            Effect::Inst { body, .. } => self.from_effect(c, *body),
+
+            Effect::Forall { .. } => {
+                panic!("Quantifiers must be removed prior to negative precondition removal");
+            }
+
+            Effect::When { cond, effect } => {
+                self.from_expr(c, *cond);
+                self.from_effect(c, *effect);
+            }
+
+            Effect::And { effects } => {
+                for id in effects {
+                    self.from_effect(c, *id);
+                }
+            }
+
+            Effect::Atom { .. } | Effect::True => {}
+        }
+    }
+
+    fn from_expr(&mut self, c: &Context, id: Id<Expr>) {
+        match &c.exprs[id] {
+            Expr::Not { arg } => {
+                let &Expr::Atom { atom } = &c.exprs[*arg] else {
+                    panic!("Negation applied to a non-atom expression");
+                };
+
+                let &Atom { pred, .. } = &c.atoms[atom];
+
+                // We only care about negative preconditions for predicates that can change over
+                // the course of planning.
+                if !c.predicates[pred].is_const {
+                    self.preconds.insert(pred);
+                }
+            }
+
+            Expr::Inst { body, .. } => self.from_expr(c, *body),
+
+            Expr::And { exprs } | Expr::Or { exprs } => {
+                for id in exprs {
+                    self.from_expr(c, *id)
+                }
+            }
+
+            Expr::Forall { .. } | Expr::Exists { .. } => {
+                panic!("Quantifiers must be removed prior to negative precondition removal");
+            }
+
+            Expr::Atom { .. } | Expr::Eq { .. } | Expr::True | Expr::False => {}
+        }
+    }
+}
+
+fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effect>) -> Id<Effect> {
+    let eff = std::mem::replace(&mut c.effects[id], Effect::True);
+    let res = match &eff {
+        Effect::Inst { args, body } => {
+            let nbody = translate_negative_effects(negs, c, *body);
+            if nbody != *body {
+                c.effects.add(Effect::Inst {
+                    args: args.clone(),
+                    body: nbody,
+                })
+            } else {
+                id
+            }
+        }
+        Effect::Forall { .. } => {
+            panic!("Quantifiers must be removed prior to negative precondition removal");
+        }
+        Effect::Atom { neg, atom } => {
+            let Atom { pred, args } = &c.atoms[*atom];
+            if let Some(nid) = negs.get(pred) {
+                let natom = c.atoms.add(Atom {
+                    pred: *nid,
+                    args: args.clone(),
+                });
+
+                let nid = c.effects.add(Effect::Atom {
+                    neg: !*neg,
+                    atom: natom,
+                });
+                Effect::and(c, [id, nid])
+            } else {
+                id
+            }
+        }
+
+        Effect::When { cond, effect } => {
+            let ncond = translate_negative_exprs(negs, c, *cond);
+            let neffect = translate_negative_effects(negs, c, *effect);
+            if ncond != *cond || neffect != *effect {
+                c.effects.add(Effect::When {
+                    cond: ncond,
+                    effect: neffect,
+                })
+            } else {
+                id
+            }
+        }
+
+        Effect::And { effects } => {
+            let mut changed = false;
+            let neffects = Vec::from_iter(effects.iter().copied().map(|id| {
+                let nid = translate_negative_effects(negs, c, id);
+                changed = changed || id != nid;
+                nid
+            }));
+            if changed {
+                Effect::and(c, neffects)
+            } else {
+                id
+            }
+        }
+        Effect::True => id,
+    };
+    c.effects[id] = eff;
+    res
+}
+
+fn translate_negative_exprs(negs: &NegatedPreds, c: &mut Context, id: Id<Expr>) -> Id<Expr> {
+    let expr = std::mem::replace(&mut c.exprs[id], Expr::True);
+    let res = match &expr {
+        Expr::Inst { args, body } => {
+            let nbody = translate_negative_exprs(negs, c, *body);
+            if nbody != *body {
+                c.exprs.add(Expr::Inst {
+                    args: args.clone(),
+                    body: nbody,
+                })
+            } else {
+                id
+            }
+        }
+
+        Expr::Forall { .. } | Expr::Exists { .. } => {
+            panic!("Quantifiers must be removed prior to negative precondition removal");
+        }
+
+        Expr::And { exprs } => {
+            let mut changed = false;
+            let nexprs = Vec::from_iter(exprs.iter().copied().map(|id| {
+                let nid = translate_negative_exprs(negs, c, id);
+                changed = changed || id != nid;
+                nid
+            }));
+            if changed { Expr::and(c, nexprs) } else { id }
+        }
+
+        Expr::Or { exprs } => {
+            let mut changed = false;
+            let nexprs = Vec::from_iter(exprs.iter().copied().map(|id| {
+                let nid = translate_negative_exprs(negs, c, id);
+                changed = changed || id != nid;
+                nid
+            }));
+            if changed { Expr::or(c, nexprs) } else { id }
+        }
+
+        Expr::Not { arg } => {
+            let &Expr::Atom { atom } = &c.exprs[*arg] else {
+                panic!("Negation applied to a non-atom expression");
+            };
+
+            let &Atom { pred, ref args } = &c.atoms[atom];
+            if let Some(npred) = negs.get(&pred) {
+                let natom = c.atoms.add(Atom {
+                    pred: *npred,
+                    args: args.clone(),
+                });
+                c.exprs.add(Expr::Atom { atom: natom })
+            } else {
+                id
+            }
+        }
+
+        Expr::Atom { .. } | Expr::Eq { .. } | Expr::True | Expr::False => id,
+    };
+    c.exprs[id] = expr;
+    res
 }

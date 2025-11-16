@@ -96,6 +96,8 @@ pub struct Predicate {
     pub name: String,
     pub params: Vec<Param>,
     pub is_const: bool,
+    /// True for copies introduced for negative preconditions.
+    pub is_negated: bool,
 }
 
 impl Named for Predicate {
