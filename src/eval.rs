@@ -1,4 +1,5 @@
-use crate::ir::{And, Constant, Context, Effect, Expr, Id, Param, Var, VarKind};
+use crate::ir::{And, Atom, Constant, Context, Effect, Expr, Id, Param, Predicate, Var, VarKind};
+use std::collections::HashMap;
 
 type Env = Vec<Vec<Id<Constant>>>;
 
@@ -10,6 +11,7 @@ struct Simplify {
     t: Id<Expr>,
     f: Id<Expr>,
     env: Env,
+    atoms: HashMap<Id<Predicate>, HashMap<Vec<Id<Constant>>, Id<Atom>>>,
 }
 
 impl Simplify {
@@ -18,6 +20,7 @@ impl Simplify {
             t: c.exprs.add(Expr::True),
             f: c.exprs.add(Expr::False),
             env: Vec::new(),
+            atoms: HashMap::new(),
         }
     }
 
@@ -36,22 +39,65 @@ impl Simplify {
         res
     }
 
+    fn param(&self, ix: u16) -> Id<Constant> {
+        let mut ix = usize::from(ix);
+        for scope in self.env.iter() {
+            if scope.len() < ix {
+                ix -= scope.len();
+                continue;
+            }
+
+            return scope[ix];
+        }
+        Id::none()
+    }
+
     fn lookup(&self, var: &Var) -> Id<Constant> {
         match var.kind {
-            VarKind::Param { ix } => {
-                let mut ix = usize::from(ix);
-                for scope in self.env.iter() {
-                    if scope.len() < ix {
-                        ix -= scope.len();
-                        continue;
-                    }
-
-                    return scope[ix];
-                }
-                Id::none()
-            }
+            VarKind::Param { ix } => self.param(ix),
             VarKind::Const { id } => id,
         }
+    }
+
+    fn cache_atom(&mut self, c: &mut Context, pred: Id<Predicate>, args: Vec<Var>) -> Id<Atom> {
+        let preds = self.atoms.entry(pred).or_default();
+        let key = Vec::from_iter(args.iter().map(|var| {
+            let VarKind::Const { id } = var.kind else {
+                panic!("All atoms should be instantiated at this point")
+            };
+            id
+        }));
+
+        if let Some(id) = preds.get(&key) {
+            *id
+        } else {
+            let id = c.atoms.add(Atom { pred, args });
+            preds.insert(key, id);
+            id
+        }
+    }
+
+    /// Fully instantiate an atom, if possible.
+    fn atom(&mut self, c: &mut Context, id: Id<Atom>) -> Id<Atom> {
+        let Atom { pred, args } = &c.atoms[id];
+        let mut changed = false;
+        let args = Vec::from_iter(args.into_iter().map(|var| match var.kind {
+            VarKind::Param { ix } => {
+                let id = self.param(ix);
+                if !id.exists() {
+                    var.clone()
+                } else {
+                    changed = true;
+                    Var {
+                        loc: var.loc,
+                        kind: VarKind::Const { id },
+                    }
+                }
+            }
+            VarKind::Const { .. } => var.clone(),
+        }));
+
+        self.cache_atom(c, *pred, args)
     }
 
     fn effect(&mut self, c: &mut Context, id: Id<Effect>) -> Id<Effect> {
@@ -91,7 +137,17 @@ impl Simplify {
                 }
             }
 
-            Effect::Atom { .. } => id,
+            Effect::Atom { neg, atom } => {
+                let satom = self.atom(c, *atom);
+                if satom == *atom {
+                    id
+                } else {
+                    c.effects.add(Effect::Atom {
+                        neg: *neg,
+                        atom: satom,
+                    })
+                }
+            }
 
             Effect::When { cond, effect } => {
                 let scond = self.expr(c, *cond);
@@ -268,7 +324,16 @@ impl Simplify {
                 }
             }
 
-            Expr::True | Expr::False | Expr::Atom { .. } => id,
+            Expr::Atom { atom } => {
+                let satom = self.atom(c, *atom);
+                if satom == *atom {
+                    id
+                } else {
+                    c.exprs.add(Expr::Atom { atom: satom })
+                }
+            }
+
+            Expr::True | Expr::False => id,
         };
 
         c.exprs[id] = expr;
