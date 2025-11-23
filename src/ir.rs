@@ -209,6 +209,11 @@ pub enum Effect {
         body: Id<Effect>,
     },
 
+    Exists {
+        params: Vec<Param>,
+        body: Id<Effect>,
+    },
+
     Atom {
         neg: bool,
         atom: Id<Atom>,

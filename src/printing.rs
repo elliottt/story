@@ -213,6 +213,10 @@ impl Pretty for Effect {
                 pp_quantifier(c, ps, "forall", params, &c.effects[*body])
             }
 
+            Effect::Exists { params, body } => {
+                pp_quantifier(c, ps, "exists", params, &c.effects[*body])
+            }
+
             Effect::And { effects } => {
                 apply("and", effects.iter().map(|e| c.effects[*e].to_doc(c, ps)))
             }

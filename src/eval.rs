@@ -137,6 +137,23 @@ impl Simplify {
                 }
             }
 
+            Effect::Exists { params, body } => {
+                let sbody = self.with_params(params, |s| s.effect(c, *body));
+                match c.effects[sbody] {
+                    Effect::True => sbody,
+                    _ => {
+                        if sbody == *body {
+                            id
+                        } else {
+                            c.effects.add(Effect::Forall {
+                                params: params.clone(),
+                                body: sbody,
+                            })
+                        }
+                    }
+                }
+            }
+
             Effect::Atom { neg, atom } => {
                 let satom = self.atom(c, *atom);
                 if satom == *atom {

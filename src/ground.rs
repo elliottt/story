@@ -48,7 +48,7 @@ fn used_effect_preds(
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
-        Effect::Inst { body, .. } | Effect::Forall { body, .. } => {
+        Effect::Inst { body, .. } | Effect::Forall { body, .. } | Effect::Exists { body, .. } => {
             used_effect_preds(predicates, atoms, exprs, effects, *body);
         }
 
@@ -155,7 +155,7 @@ fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
         }
 
         // TODO: Unclear what to do here
-        Effect::Forall { .. } | Effect::Inst { .. } => {
+        Effect::Forall { .. } | Effect::Exists { .. } | Effect::Inst { .. } => {
             context.effects[id] = eff;
         }
 
@@ -252,7 +252,7 @@ fn nnf_action(context: &mut Context, action: &mut Action) {
 fn nnf_effect(c: &mut Context, id: Id<Effect>) -> Id<Effect> {
     let mut effect = std::mem::replace(&mut c.effects[id], Effect::True);
     match &mut effect {
-        Effect::Inst { body, .. } | Effect::Forall { body, .. } => {
+        Effect::Inst { body, .. } | Effect::Forall { body, .. } | Effect::Exists { body, .. } => {
             *body = nnf_effect(c, *body);
         }
 
@@ -412,7 +412,7 @@ impl NegativePreconds {
         match &c.effects[id] {
             Effect::Inst { body, .. } => self.from_effect(c, *body),
 
-            Effect::Forall { .. } => {
+            Effect::Forall { .. } | Effect::Exists { .. } => {
                 panic!("Quantifiers must be removed prior to negative precondition removal");
             }
 
@@ -478,7 +478,7 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
                 id
             }
         }
-        Effect::Forall { .. } => {
+        Effect::Forall { .. } | Effect::Exists { .. } => {
             panic!("Quantifiers must be removed prior to negative precondition removal");
         }
         Effect::Atom { neg, atom } => {
