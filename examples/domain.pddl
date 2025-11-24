@@ -24,10 +24,11 @@
     :parameters (?actor - character ?from ?to - location)
     :precondition
       (and (at-location ?actor ?from)
-           (not (or (= ?from ?to) (injured ?actor)))
+           (not (= ?from ?to))
+           (not (injured ?actor))
            (alive ?actor)
            (conscious ?actor)
-           (or (connected ?from ?to) (connected ?to ?from)))
+           (connected ?from ?to))
     :effect
       (and (at-location ?actor ?to)
            (not (at-location ?actor ?from))))
@@ -46,6 +47,5 @@
            (scary ?actor))
 
     :effect
-      (and (when (frail ?target) (not (alive ?target)))
-           (scared ?target)))
+      (scared ?target))
 )

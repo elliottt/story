@@ -8,8 +8,8 @@ use crate::{
     File, Files,
     arena::Id,
     ir::{
-        Action, Atom, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate, Type,
-        Var, VarKind,
+        Action, And, Atom, Constant, Context, Effect, Expr, Ident, NamedArena, Param, Predicate,
+        Type, Var, VarKind,
     },
 };
 use lexer::Token;
@@ -117,7 +117,8 @@ pub fn parse_problem<'a>(
                     }
 
                     ":init" => {
-                        context.init = parse_expr_list(p, context, &[])?;
+                        let inits = parse_effect_list(p, context, &[])?;
+                        context.init = Effect::and(context, inits);
                     }
 
                     ":goal" => {
@@ -331,6 +332,18 @@ fn parse_expr_list(
     parser::Result::Ok(result)
 }
 
+fn parse_effect_list(
+    p: &mut Parser<'_>,
+    context: &mut Context,
+    params: &[Param],
+) -> parser::Result<Vec<Id<Effect>>> {
+    let mut result = Vec::new();
+    while p.next_is(Token::LParen)? {
+        result.push(parse_effect(p, context, params)?);
+    }
+    parser::Result::Ok(result)
+}
+
 // Parse and validate an atomic formula.
 fn parse_atom(
     p: &mut Parser<'_>,
@@ -448,38 +461,39 @@ fn parse_expr(
         let next = p.expect(Token::Atom)?;
 
         match p.text(next.loc) {
-            "not" => {
-                let arg = parse_expr(p, context, params)?;
-                Result::Ok(context.exprs.add(Expr::Not { arg }))
-            }
+            "not" => p.list(|p| {
+                let next = p.expect(Token::Atom)?;
+                match p.text(next.loc) {
+                    "=" => {
+                        let left = parse_var(p, context, params)?;
+                        let right = parse_var(p, context, params)?;
+                        Result::Ok(context.exprs.add(Expr::Eq { neg: true, left, right }))
+                    }
+                    _ => {
+                        if let Some(atom) = parse_atom(p, context, params, next)? {
+                            Result::Ok(context.exprs.add(Expr::Atom { neg: true, atom }))
+                        } else {
+                            Result::Ok(Id::none())
+                        }
+                    }
+                }
+            }),
 
             "=" => {
                 let left = parse_var(p, context, params)?;
                 let right = parse_var(p, context, params)?;
-                Result::Ok(context.exprs.add(Expr::Eq { left, right }))
+                Result::Ok(context.exprs.add(Expr::Eq { neg: false, left, right }))
             }
 
             "and" => {
-                let exprs = parse_expr_list(p, context, params)?;
-                Result::Ok(context.exprs.add(Expr::And { exprs }))
-            }
-
-            "or" => {
-                let exprs = parse_expr_list(p, context, params)?;
-                Result::Ok(context.exprs.add(Expr::Or { exprs }))
-            }
-
-            // Desugar `(imply p q)` as `(or (not p) q)`
-            "imply" => {
-                let pred = parse_expr(p, context, params)?;
-                let cons = parse_expr(p, context, params)?;
-                let exprs = vec![context.exprs.add(Expr::Not { arg: pred }), cons];
-                Result::Ok(context.exprs.add(Expr::Or { exprs }))
+                let mut exprs = parse_expr_list(p, context, params)?;
+                exprs.retain(|id| id.exists());
+                Result::Ok(Expr::and(context, exprs))
             }
 
             _ => {
                 if let Some(atom) = parse_atom(p, context, params, next)? {
-                    Result::Ok(context.exprs.add(Expr::Atom { atom }))
+                    Result::Ok(context.exprs.add(Expr::Atom { neg: false, atom }))
                 } else {
                     Result::Ok(Id::none())
                 }
@@ -496,11 +510,6 @@ fn parse_effect(
     p.list(|p| {
         let next = p.expect(Token::Atom)?;
         match p.text(next.loc) {
-            "when" => {
-                let cond = parse_expr(p, context, params)?;
-                let effect = parse_effect(p, context, params)?;
-                Result::Ok(context.effects.add(Effect::When { cond, effect }))
-            }
             "not" => p.list(|p| {
                 let next = p.expect(Token::Atom)?;
                 if let Some(atom) = parse_atom(p, context, params, next)? {
@@ -510,11 +519,9 @@ fn parse_effect(
                 }
             }),
             "and" => {
-                let mut effects = Vec::new();
-                while p.next_is(Token::LParen)? {
-                    effects.push(parse_effect(p, context, params)?);
-                }
-                Result::Ok(context.effects.add(Effect::And { effects }))
+                let mut effects = parse_effect_list(p, context, params)?;
+                effects.retain(|id| id.exists());
+                Result::Ok(Effect::and(context, effects))
             }
             _ => {
                 if let Some(atom) = parse_atom(p, context, params, next)? {
@@ -529,12 +536,12 @@ fn parse_effect(
 
 fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()> {
     let name = p.expect(Token::Atom)?;
-    let mut params = Vec::new();
-    let mut precond = Id::none();
-    let mut effect = Id::none();
     let mut action = Action {
         loc: name.loc,
         name: p.text(name.loc).to_owned(),
+        params: Vec::new(),
+        inst: Vec::new(),
+        pre: Id::none(),
         effect: Id::none(),
     };
 
@@ -551,20 +558,20 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
         let next = p.consume()?;
         match p.text(next.loc) {
             ":parameters" => {
-                if params.is_empty() {
-                    p.list(|p| parse_parameters(p, &context.types, &mut params))?
+                if action.params.is_empty() {
+                    p.list(|p| parse_parameters(p, &context.types, &mut action.params))?
                 }
             }
 
             ":precondition" => {
-                if !precond.exists() {
-                    precond = parse_expr(p, context, &params)?;
+                if !action.pre.exists() {
+                    action.pre = parse_expr(p, context, &action.params)?;
                 }
             }
 
             ":effect" => {
-                if !effect.exists() {
-                    effect = parse_effect(p, context, &params)?;
+                if !action.effect.exists() {
+                    action.effect = parse_effect(p, context, &action.params)?;
                 }
             }
 
@@ -576,12 +583,6 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
             }
         }
     }
-
-    let when = context.effects.add(Effect::When {
-        cond: precond,
-        effect,
-    });
-    action.effect = context.effects.add(Effect::Forall { params, body: when });
 
     context.actions.add(action);
 

@@ -132,6 +132,16 @@ impl<T> Default for Arena<T> {
     }
 }
 
+impl<T> IntoIterator for Arena<T> {
+    type Item = T;
+
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elems.into_iter()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NamedArena<T: 'static> {
     elems: Arena<T>,
@@ -213,3 +223,14 @@ impl<T> Default for NamedArena<T> {
         }
     }
 }
+
+impl<T> IntoIterator for NamedArena<T> {
+    type Item = T;
+
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.elems.into_iter()
+    }
+}
+

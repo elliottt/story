@@ -21,7 +21,7 @@
     (frail witch))
 
   (:goal
-    (and (not (and (alive knight) (alive dragon)))
+    (and (not (alive dragon))
          (at-location knight bridge)
          (at-location dragon bridge)))
 )

@@ -2,22 +2,18 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     arena::Id,
-    eval,
-    ir::{Action, And, Arena, Atom, Constant, Context, Effect, Expr, NamedArena, Predicate, Type},
+    ir::{
+        And, Arena, Atom, Constant, Context, Effect, Expr, NamedArena, Param, Predicate,
+        Type, Var, VarKind,
+    },
 };
 
 pub fn ground(context: &mut Context) {
     // Determine constant predicates by determining which ones don't show up in action effects.
     determine_const_predicates(context);
 
-    // Remove uses of `when` in effects, by duplicating actions.
-    elim_when(context);
-
-    // Remove parameters by instantiating all actions
-    instantiate_actions(context);
-
-    // Put the context into negation normal form
-    nnf_context(context);
+    // Instantiate all actions so that we only deal with concrete atoms from here.
+    Instantiate::run(context);
 
     // Introduce copies of predicates used as negative preconditions
     remove_negative_preconditions(context)
@@ -48,17 +44,8 @@ fn used_effect_preds(
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
-        Effect::Inst { body, .. } | Effect::Forall { body, .. } | Effect::Exists { body, .. } => {
-            used_effect_preds(predicates, atoms, exprs, effects, *body);
-        }
-
         Effect::Atom { atom, .. } => {
             predicates[atoms[*atom].pred].is_const = false;
-        }
-        // NOTE: we ignore the condition in a `when` clause, as it is treated as a secondary
-        // precondition of the action.
-        Effect::When { effect, .. } => {
-            used_effect_preds(predicates, atoms, exprs, effects, *effect);
         }
         Effect::And { effects: es } => {
             for eff in es.iter().copied() {
@@ -69,140 +56,75 @@ fn used_effect_preds(
     }
 }
 
-fn elim_when(context: &mut Context) {
-    let mut work = std::mem::take(&mut context.actions).into_inner();
-
-    let mut whens = Vec::new();
-    while let Some(action) = work.pop() {
-        remove_when(context, &mut whens, action.effect);
-
-        // Queue up versions of this action that have additional preconditions and actions for each
-        // `when`.
-        work.extend(whens.drain(..).map(|w| w.extend(context, &action)));
-
-        // If all the effects were `when` nodes, can skip adding this effect back in.
-        if !context.effects[action.effect].is_true() {
-            context.actions.add(action);
-        }
-    }
-}
-
-struct When {
-    cond: Id<Expr>,
-    effect: Id<Effect>,
-}
-
-impl When {
-    fn extend(self, context: &mut Context, action: &Action) -> Action {
-        let mut copy = action.clone();
-        let mut outer = context.effects[copy.effect].clone();
-        match &mut outer {
-            Effect::Forall { body, .. } | Effect::Inst { body, .. } => {
-                let mut inner = context.effects[*body].clone();
-                match &mut inner {
-                    Effect::When { cond, effect } => {
-                        *cond = Expr::and(context, [*cond, self.cond]);
-                        *effect = Effect::and(context, [*effect, self.effect]);
-                    }
-
-                    _ => {
-                        inner = Effect::When {
-                            cond: self.cond,
-                            effect: Effect::and(context, [copy.effect, self.effect]),
-                        }
-                    }
-                }
-                *body = context.effects.add(inner);
-            }
-
-            Effect::When { cond, effect } => {
-                *cond = Expr::and(context, [*cond, self.cond]);
-                *effect = Effect::and(context, [*effect, self.effect]);
-            }
-
-            _ => {
-                outer = Effect::When {
-                    cond: self.cond,
-                    effect: Effect::and(context, [copy.effect, self.effect]),
-                }
-            }
-        }
-
-        copy.effect = context.effects.add(outer);
-
-        return copy;
-    }
-}
-
-/// Remove the outer-most uses of `when` in the effects of an action. Mutates the action in-place
-/// so that it's left as the version that includes no uses of `when`.
-fn remove_when(context: &mut Context, whens: &mut Vec<When>, id: Id<Effect>) {
-    let mut eff = std::mem::replace(&mut context.effects[id], Effect::True);
-    match &mut eff {
-        &mut Effect::When { cond, effect } => {
-            whens.push(When { cond, effect });
-        }
-
-        Effect::And { effects } => {
-            effects.retain(|id| {
-                remove_when(context, whens, *id);
-                !context.effects[*id].is_true()
-            });
-            if effects.is_empty() {
-                return;
-            }
-            context.effects[id] = eff;
-        }
-
-        // TODO: Unclear what to do here
-        Effect::Forall { .. } | Effect::Exists { .. } | Effect::Inst { .. } => {
-            context.effects[id] = eff;
-        }
-
-        Effect::Atom { .. } | Effect::True => {
-            context.effects[id] = eff;
-        }
-    }
-}
-
 type Values = HashMap<Id<Type>, Vec<Id<Constant>>>;
 
-/// Duplicate actions for every instantiation of their parameters
-fn instantiate_actions(context: &mut Context) {
-    let mut type_values = Values::new();
+struct Instantiate {
+    values: Values,
+    inst: Vec<Vec<Id<Constant>>>,
+    atoms: HashMap<Id<Predicate>, HashMap<Vec<Id<Constant>>, Id<Atom>>>,
+    t: Id<Expr>,
+    f: Id<Expr>,
+}
 
-    let all_values = Vec::from_iter(context.constants.iter_with_id().map(|(i, _)| i));
-    type_values.insert(Id::none(), all_values);
+impl Instantiate {
+    fn run(ctx: &mut Context) {
+        let mut values = Values::new();
 
-    let mut work = Vec::from_iter(context.constants.iter_with_id().map(|(id, c)| (id, c.ty)));
-    while let Some((c, ty)) = work.pop() {
-        type_values.entry(ty).or_default().push(c);
-        let st = context.types[ty].super_type;
-        if st.exists() {
-            work.push((c, st))
+        let all_values = Vec::from_iter(ctx.constants.iter_with_id().map(|(i, _)| i));
+        values.insert(Id::none(), all_values);
+
+        let mut work = Vec::from_iter(ctx.constants.iter_with_id().map(|(id, c)| (id, c.ty)));
+        while let Some((c, ty)) = work.pop() {
+            values.entry(ty).or_default().push(c);
+            let st = ctx.types[ty].super_type;
+            if st.exists() {
+                work.push((c, st))
+            }
+        }
+
+        let mut rq = Self {
+            values,
+            inst: Vec::new(),
+            atoms: HashMap::new(),
+            t: ctx.exprs.add(Expr::True),
+            f: ctx.exprs.add(Expr::False),
+        };
+
+        let mut actions = std::mem::take(&mut ctx.actions);
+        for action in actions.iter_mut() {
+            for inst in rq.all_insts(&action.params) {
+                let mut a = action.clone();
+                a.inst = inst.clone();
+                rq.with_inst(inst, |rq| {
+                    a.pre = rq.from_expr(ctx, a.pre);
+                    a.effect = rq.from_eff(ctx, a.effect);
+                });
+
+                // Filter out actions whose preconditions have collapsed to `false`. I'm not sure
+                // what to do about cases that collapse to `true`, as that means they can always be
+                // applied.
+                if a.pre != rq.f {
+                    ctx.actions.add(a);
+                }
+            }
         }
     }
 
-    for action in std::mem::take(&mut context.actions).drain() {
-        let param_tys = match &context.effects[action.effect] {
-            Effect::Forall { params, .. } => Vec::from_iter(params.iter().map(|p| p.ty)),
-            _ => continue,
-        };
-
+    fn all_insts(&self, ps: &[Param]) -> Vec<Vec<Id<Constant>>> {
         // If this action has any parameters whose type is uninhabited, we can skip specializing it
         // at all.
-        if param_tys
+        if ps
             .iter()
-            .any(|ty| ty.exists() && type_values[ty].is_empty())
+            .any(|p| p.ty.exists() && self.values[&p.ty].is_empty())
         {
-            continue;
+            return Vec::new();
         }
 
         let mut insts = vec![Vec::new()];
         let mut next = Vec::new();
-        for ty in param_tys {
+        for p in ps {
             for inst in &mut insts {
-                let (last, front) = type_values[&ty].split_last().unwrap();
+                let (last, front) = self.values[&p.ty].split_last().unwrap();
                 for val in front {
                     let mut inst = inst.clone();
                     inst.push(*val);
@@ -212,154 +134,152 @@ fn instantiate_actions(context: &mut Context) {
             }
             insts.extend(next.drain(..));
         }
+        insts
+    }
 
-        for args in insts.drain(..) {
-            let mut inst = action.instantiate(context, args);
-            inst.effect = eval::simplify(context, inst.effect);
+    fn with_inst<T>(&mut self, inst: Vec<Id<Constant>>, mut f: impl FnMut(&mut Self) -> T) -> T {
+        self.inst.push(inst);
+        let ret = f(self);
+        self.inst.pop();
+        ret
+    }
 
-            // If the effect collapsed to #t, we can ignore this action.
-            if !matches!(context.effects[inst.effect], Effect::True) {
-                context.actions.add(inst);
+    fn param(&self, ix: u16) -> Id<Constant> {
+        let mut ix = usize::from(ix);
+        for scope in self.inst.iter() {
+            if scope.len() < ix {
+                ix -= scope.len();
+                continue;
             }
+
+            return scope[ix];
+        }
+        Id::none()
+    }
+
+    fn cache_atom(&mut self, c: &mut Context, pred: Id<Predicate>, args: Vec<Var>) -> Id<Atom> {
+        let preds = self.atoms.entry(pred).or_default();
+        let key = Vec::from_iter(args.iter().map(|var| {
+            let VarKind::Const { id } = var.kind else {
+                panic!("All atoms should be instantiated at this point")
+            };
+            id
+        }));
+
+        if let Some(id) = preds.get(&key) {
+            *id
+        } else {
+            let id = c.atoms.add(Atom { pred, args });
+            preds.insert(key, id);
+            id
         }
     }
-}
 
-/// Put all referenced expressions in [`Context`] into negation normal form.
-fn nnf_context(context: &mut Context) {
-    let mut actions = std::mem::take(&mut context.actions);
-    for action in actions.iter_mut() {
-        nnf_action(context, action)
+    fn from_var(&mut self, var: &Var) -> Option<Var> {
+        match var.kind {
+            VarKind::Param { ix } => {
+                let id = self.param(ix);
+                if !id.exists() {
+                    panic!("Unknown variable: {}\n: {:?}", ix, self.inst);
+                }
+                Some(Var {
+                    loc: var.loc,
+                    kind: VarKind::Const { id },
+                })
+            }
+            VarKind::Const { .. } => None,
+        }
     }
-    context.actions = actions;
 
-    let mut init = std::mem::take(&mut context.init);
-    for expr in init.iter_mut() {
-        *expr = nnf_expr(context, *expr);
+    fn from_atom(&mut self, ctx: &mut Context, id: Id<Atom>) -> Id<Atom> {
+        let Atom { pred, args } = &ctx.atoms[id];
+        let args = Vec::from_iter(
+            args.into_iter()
+                .map(|var| self.from_var(var).unwrap_or_else(|| var.clone())),
+        );
+        self.cache_atom(ctx, *pred, args)
     }
-    context.init = init;
 
-    context.goal = nnf_expr(context, context.goal);
-}
-
-/// Put an [`Action`] into negation normal form.
-fn nnf_action(context: &mut Context, action: &mut Action) {
-    action.effect = nnf_effect(context, action.effect);
-}
-
-/// Effects are already in negation normal form, but the expressions held within a `when` might not
-/// be.
-fn nnf_effect(c: &mut Context, id: Id<Effect>) -> Id<Effect> {
-    let mut effect = std::mem::replace(&mut c.effects[id], Effect::True);
-    match &mut effect {
-        Effect::Inst { body, .. } | Effect::Forall { body, .. } | Effect::Exists { body, .. } => {
-            *body = nnf_effect(c, *body);
-        }
-
-        Effect::When { cond, effect } => {
-            *cond = nnf_expr(c, *cond);
-            *effect = nnf_effect(c, *effect);
-        }
-
-        Effect::And { effects } => {
-            for effect in effects.iter_mut() {
-                *effect = nnf_effect(c, *effect);
+    fn from_eff(&mut self, ctx: &mut Context, id: Id<Effect>) -> Id<Effect> {
+        let eff = std::mem::replace(&mut ctx.effects[id], Effect::True);
+        let res = match &eff {
+            Effect::And { effects } => {
+                let mut changed = false;
+                let effects = Vec::from_iter(effects.into_iter().map(|id| {
+                    let sid = self.from_eff(ctx, *id);
+                    changed = changed || sid != *id;
+                    sid
+                }));
+                if !changed {
+                    id
+                } else {
+                    Effect::and(ctx, effects)
+                }
             }
-        }
 
-        Effect::Atom { .. } | Effect::True => {}
+            Effect::Atom { neg, atom } => {
+                let satom = self.from_atom(ctx, *atom);
+                if satom == *atom {
+                    id
+                } else {
+                    ctx.effects.add(Effect::Atom {
+                        neg: *neg,
+                        atom: satom,
+                    })
+                }
+            }
+
+            Effect::True => id,
+        };
+        ctx.effects[id] = eff;
+        res
     }
-    c.effects[id] = effect;
-    id
-}
 
-fn nnf_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
-    let mut expr = std::mem::replace(&mut context.exprs[id], Expr::True);
-    let new = match &mut expr {
-        Expr::Inst { body, .. } => {
-            *body = nnf_expr(context, *body);
-            id
-        }
-
-        Expr::Forall { body, .. } => {
-            *body = nnf_expr(context, *body);
-            id
-        }
-
-        Expr::Exists { body, .. } => {
-            *body = nnf_expr(context, *body);
-            id
-        }
-
-        Expr::Not { arg } => negate_expr(context, *arg),
-
-        // There's nothing to be done for an atom, equality, true, or false.
-        Expr::Atom { .. } | Expr::Eq { .. } | Expr::True | Expr::False => id,
-
-        Expr::And { exprs } => {
-            for arg in exprs.iter_mut() {
-                *arg = nnf_expr(context, *arg);
+    fn from_expr(&mut self, ctx: &mut Context, id: Id<Expr>) -> Id<Expr> {
+        let expr = std::mem::replace(&mut ctx.exprs[id], Expr::True);
+        let res = match &expr {
+            Expr::And { exprs } => {
+                let mut changed = false;
+                let mut collapsed = false;
+                let effects = Vec::from_iter(exprs.into_iter().filter_map(|id| {
+                    let sid = self.from_expr(ctx, *id);
+                    changed = changed || sid != *id;
+                    collapsed = collapsed || sid == self.f;
+                    (sid != self.t).then_some(sid)
+                }));
+                if !changed {
+                    id
+                } else if collapsed {
+                    self.f
+                } else {
+                    Expr::and(ctx, effects)
+                }
             }
-            id
-        }
-        Expr::Or { exprs } => {
-            for arg in exprs.iter_mut() {
-                *arg = nnf_expr(context, *arg);
+
+            // TODO: evaluation of static knowledge
+            Expr::Atom { neg, atom } => {
+                let satom = self.from_atom(ctx, *atom);
+                if satom == *atom {
+                    id
+                } else {
+                    ctx.exprs.add(Expr::Atom { neg: *neg, atom: satom })
+                }
             }
-            id
-        }
-    };
-    context.exprs[id] = expr;
-    new
-}
 
-/// Negate an expression.
-fn negate_expr(context: &mut Context, id: Id<Expr>) -> Id<Expr> {
-    match &context.exprs[id] {
-        Expr::Inst { args, body } => {
-            let args = args.clone();
-            let body = negate_expr(context, *body);
-            context.exprs.add(Expr::Inst { args, body })
-        }
-
-        Expr::Forall { params, body } => {
-            let params = params.clone();
-            let body = negate_expr(context, *body);
-            context.exprs.add(Expr::Exists { params, body })
-        }
-
-        Expr::Exists { params, body } => {
-            let params = params.clone();
-            let body = negate_expr(context, *body);
-            context.exprs.add(Expr::Forall { params, body })
-        }
-
-        // We can't push negation down any further here.
-        Expr::Atom { .. } | Expr::Eq { .. } => context.exprs.add(Expr::Not { arg: id }),
-
-        // Double-negation elimination
-        &Expr::Not { arg } => negate_expr(context, arg),
-
-        // De Morgan's laws
-        Expr::And { exprs } => {
-            let mut args = exprs.clone();
-            for arg in args.iter_mut() {
-                *arg = negate_expr(context, *arg);
+            Expr::Eq { neg, left, right } => {
+                let sleft = self.from_var(left).expect("Unbound parameter");
+                let sright = self.from_var(right).expect("Unbound parameter");
+                if *neg == (sleft.kind == sright.kind) {
+                    self.t
+                } else {
+                    self.f
+                }
             }
-            context.exprs.add(Expr::Or { exprs: args })
-        }
 
-        Expr::Or { exprs } => {
-            let mut args = exprs.clone();
-            for arg in args.iter_mut() {
-                *arg = negate_expr(context, *arg);
-            }
-            Expr::and(context, args)
-        }
-
-        Expr::True => context.exprs.add(Expr::False),
-
-        Expr::False => context.exprs.add(Expr::True),
+            Expr::True | Expr::False => id,
+        };
+        ctx.exprs[id] = expr;
+        res
     }
 }
 
@@ -368,6 +288,8 @@ fn remove_negative_preconditions(c: &mut Context) {
     for action in c.actions.iter() {
         ps.from_effect(c, action.effect);
     }
+    ps.from_effect(c, c.init);
+    ps.from_expr(c, c.goal);
 
     let mut negatives = NegatedPreds::new();
     for id in ps.into_preds() {
@@ -388,6 +310,9 @@ fn remove_negative_preconditions(c: &mut Context) {
         action.effect = translate_negative_effects(&negatives, c, action.effect);
     }
     c.actions = actions;
+
+    c.init = translate_negative_effects(&negatives, c, c.init);
+    c.goal = translate_negative_exprs(&negatives, c, c.goal);
 }
 
 type NegatedPreds = HashMap<Id<Predicate>, Id<Predicate>>;
@@ -410,17 +335,6 @@ impl NegativePreconds {
 
     fn from_effect(&mut self, c: &Context, id: Id<Effect>) {
         match &c.effects[id] {
-            Effect::Inst { body, .. } => self.from_effect(c, *body),
-
-            Effect::Forall { .. } | Effect::Exists { .. } => {
-                panic!("Quantifiers must be removed prior to negative precondition removal");
-            }
-
-            Effect::When { cond, effect } => {
-                self.from_expr(c, *cond);
-                self.from_effect(c, *effect);
-            }
-
             Effect::And { effects } => {
                 for id in effects {
                     self.from_effect(c, *id);
@@ -433,12 +347,8 @@ impl NegativePreconds {
 
     fn from_expr(&mut self, c: &Context, id: Id<Expr>) {
         match &c.exprs[id] {
-            Expr::Not { arg } => {
-                let &Expr::Atom { atom } = &c.exprs[*arg] else {
-                    panic!("Negation applied to a non-atom expression");
-                };
-
-                let &Atom { pred, .. } = &c.atoms[atom];
+            Expr::Atom { neg, atom } if *neg => {
+                let &Atom { pred, .. } = &c.atoms[*atom];
 
                 // We only care about negative preconditions for predicates that can change over
                 // the course of planning.
@@ -447,16 +357,10 @@ impl NegativePreconds {
                 }
             }
 
-            Expr::Inst { body, .. } => self.from_expr(c, *body),
-
-            Expr::And { exprs } | Expr::Or { exprs } => {
+            Expr::And { exprs } => {
                 for id in exprs {
                     self.from_expr(c, *id)
                 }
-            }
-
-            Expr::Forall { .. } | Expr::Exists { .. } => {
-                panic!("Quantifiers must be removed prior to negative precondition removal");
             }
 
             Expr::Atom { .. } | Expr::Eq { .. } | Expr::True | Expr::False => {}
@@ -467,20 +371,6 @@ impl NegativePreconds {
 fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effect>) -> Id<Effect> {
     let eff = std::mem::replace(&mut c.effects[id], Effect::True);
     let res = match &eff {
-        Effect::Inst { args, body } => {
-            let nbody = translate_negative_effects(negs, c, *body);
-            if nbody != *body {
-                c.effects.add(Effect::Inst {
-                    args: args.clone(),
-                    body: nbody,
-                })
-            } else {
-                id
-            }
-        }
-        Effect::Forall { .. } | Effect::Exists { .. } => {
-            panic!("Quantifiers must be removed prior to negative precondition removal");
-        }
         Effect::Atom { neg, atom } => {
             let Atom { pred, args } = &c.atoms[*atom];
             if let Some(nid) = negs.get(pred) {
@@ -499,19 +389,6 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
             }
         }
 
-        Effect::When { cond, effect } => {
-            let ncond = translate_negative_exprs(negs, c, *cond);
-            let neffect = translate_negative_effects(negs, c, *effect);
-            if ncond != *cond || neffect != *effect {
-                c.effects.add(Effect::When {
-                    cond: ncond,
-                    effect: neffect,
-                })
-            } else {
-                id
-            }
-        }
-
         Effect::And { effects } => {
             let mut changed = false;
             let neffects = Vec::from_iter(effects.iter().copied().map(|id| {
@@ -525,6 +402,7 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
                 id
             }
         }
+
         Effect::True => id,
     };
     c.effects[id] = eff;
@@ -534,22 +412,6 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
 fn translate_negative_exprs(negs: &NegatedPreds, c: &mut Context, id: Id<Expr>) -> Id<Expr> {
     let expr = std::mem::replace(&mut c.exprs[id], Expr::True);
     let res = match &expr {
-        Expr::Inst { args, body } => {
-            let nbody = translate_negative_exprs(negs, c, *body);
-            if nbody != *body {
-                c.exprs.add(Expr::Inst {
-                    args: args.clone(),
-                    body: nbody,
-                })
-            } else {
-                id
-            }
-        }
-
-        Expr::Forall { .. } | Expr::Exists { .. } => {
-            panic!("Quantifiers must be removed prior to negative precondition removal");
-        }
-
         Expr::And { exprs } => {
             let mut changed = false;
             let nexprs = Vec::from_iter(exprs.iter().copied().map(|id| {
@@ -560,28 +422,14 @@ fn translate_negative_exprs(negs: &NegatedPreds, c: &mut Context, id: Id<Expr>) 
             if changed { Expr::and(c, nexprs) } else { id }
         }
 
-        Expr::Or { exprs } => {
-            let mut changed = false;
-            let nexprs = Vec::from_iter(exprs.iter().copied().map(|id| {
-                let nid = translate_negative_exprs(negs, c, id);
-                changed = changed || id != nid;
-                nid
-            }));
-            if changed { Expr::or(c, nexprs) } else { id }
-        }
-
-        Expr::Not { arg } => {
-            let &Expr::Atom { atom } = &c.exprs[*arg] else {
-                panic!("Negation applied to a non-atom expression");
-            };
-
-            let &Atom { pred, ref args } = &c.atoms[atom];
+        Expr::Atom { neg, atom } if *neg => {
+            let &Atom { pred, ref args } = &c.atoms[*atom];
             if let Some(npred) = negs.get(&pred) {
                 let natom = c.atoms.add(Atom {
                     pred: *npred,
                     args: args.clone(),
                 });
-                c.exprs.add(Expr::Atom { atom: natom })
+                c.exprs.add(Expr::Atom { neg: false, atom: natom })
             } else {
                 id
             }
