@@ -107,6 +107,13 @@ impl<T: 'static> Arena<T> {
         self.elems.iter_mut()
     }
 
+    pub fn iter_mut_with_id(&mut self) -> impl Iterator<Item = (Id<T>, &mut T)> + '_ {
+        self.elems
+            .iter_mut()
+            .enumerate()
+            .map(|(ix, e)| (Id::new(ix), e))
+    }
+
     pub fn len(&self) -> usize {
         self.elems.len()
     }
@@ -200,6 +207,10 @@ impl<T: Named> NamedArena<T> {
         self.elems.iter_with_id()
     }
 
+    pub fn iter_mut_with_id(&mut self) -> impl Iterator<Item = (Id<T>, &mut T)> + '_ {
+        self.elems.iter_mut_with_id()
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.elems.iter_mut()
     }
@@ -241,4 +252,3 @@ impl<T> IntoIterator for NamedArena<T> {
         self.elems.into_iter()
     }
 }
-

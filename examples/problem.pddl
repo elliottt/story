@@ -13,6 +13,7 @@
 
     (alive knight)
     (alive dragon)
+    (alive witch)
 
     (scary dragon)
     (connected cave forest)

@@ -8,18 +8,39 @@ use crate::{
     },
 };
 
+// TODO: grounding needs to be able to report errors.
 pub fn ground(context: &mut Context) {
     // Determine constant predicates by determining which ones don't show up in action effects.
-    determine_const_predicates(context);
+    let knowledge = determine_const_predicates(context);
 
     // Instantiate all actions so that we only deal with concrete atoms from here.
-    Instantiate::run(context);
+    Instantiate::run(knowledge, context);
 
     // Introduce copies of predicates used as negative preconditions
     remove_negative_preconditions(context)
 }
 
-fn determine_const_predicates(context: &mut Context) {
+#[derive(Debug)]
+struct StaticKnowledge {
+    preds: HashMap<Id<Predicate>, HashSet<Vec<Id<Constant>>>>,
+}
+
+impl StaticKnowledge {
+    /// Lookup the instantiation of this predicate, and return if it's known to be true. It's
+    /// assumed that if we're looking up a predicate in the static knowledge struct, that we
+    /// already know that it's constant.
+    fn is_known(&self, p: Id<Predicate>, args: &[Id<Constant>]) -> bool {
+        self.preds
+            .get(&p)
+            .map_or(false, |insts| insts.contains(args))
+    }
+}
+
+fn determine_const_predicates(context: &mut Context) -> StaticKnowledge {
+    let mut knowledge = StaticKnowledge {
+        preds: HashMap::new(),
+    };
+
     // Mark everything as constant, so that we can mark it as non-const when traversing effects.
     for pred in context.predicates.iter_mut() {
         pred.is_const = true;
@@ -34,6 +55,63 @@ fn determine_const_predicates(context: &mut Context) {
             action.effect,
         );
     }
+
+    // Any predicates that don't show up in action effects, but do show up in the init of the
+    // problem indicate static information that we can use when pruning down the space of
+    // instantiated actions.
+    context.init = collect_static_knowledge(context, &mut knowledge, context.init);
+
+    knowledge
+}
+
+fn collect_static_knowledge(
+    c: &mut Context,
+    k: &mut StaticKnowledge,
+    id: Id<Effect>,
+) -> Id<Effect> {
+    let eff = std::mem::replace(&mut c.effects[id], Effect::True);
+    let res = match &eff {
+        Effect::Atom { neg, atom } => {
+            let Atom { pred, args } = &c.atoms[*atom];
+
+            // We assume unspecified static data is false, so we don't need to process negations.
+            if !*neg && c.predicates[*pred].is_const {
+                let insts = k.preds.entry(*pred).or_default();
+
+                // TODO: avoid unwrapping consts, and exit early if they're not all constants
+                // instead
+                let args = args.iter().map(|var| var.kind.unwrap_const()).collect();
+
+                // TODO: check the return value here and reject inconsistent static data.
+                insts.insert(args);
+
+                Id::none()
+            } else {
+                id
+            }
+        }
+        Effect::And { effects } => {
+            let mut es = Vec::with_capacity(effects.len());
+            for id in effects {
+                let id = collect_static_knowledge(c, k, *id);
+                if id.exists() {
+                    es.push(id);
+                }
+            }
+            Effect::and(c, es)
+        }
+
+        // We can't learn anything from the atoms present in an `intends`, as the intent is
+        // impossible to fulfill through action.
+        Effect::Intends { .. } => {
+            // TODO: raise errors for impossible to satisfy intents
+            id
+        }
+
+        Effect::True => id,
+    };
+    c.effects[id] = eff;
+    res
 }
 
 fn used_effect_preds(
@@ -44,7 +122,7 @@ fn used_effect_preds(
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
-        Effect::Atom { atom, .. } | Effect::Intends { atom, .. } => {
+        Effect::Atom { atom, .. } => {
             predicates[atoms[*atom].pred].is_const = false;
         }
         Effect::And { effects: es } => {
@@ -52,6 +130,15 @@ fn used_effect_preds(
                 used_effect_preds(predicates, atoms, exprs, effects, eff);
             }
         }
+
+        // Intends doesn't contribute towards the referenced predicate being non-static--the
+        // predicate must occur in a non-intends effect context for that to be true. (A character
+        // could intend something impossible, but there wouldn't be any point in trying to plan
+        // action based on that.)
+        Effect::Intends { .. } => {
+            // TODO: raise errors for intents that can't be fulfilled.
+        }
+
         Effect::True => {}
     }
 }
@@ -59,6 +146,7 @@ fn used_effect_preds(
 type Values = HashMap<Id<Type>, Vec<Id<Constant>>>;
 
 struct Instantiate {
+    k: StaticKnowledge,
     values: Values,
     inst: Vec<Vec<Id<Constant>>>,
     atoms: HashMap<Id<Predicate>, HashMap<Vec<Id<Constant>>, Id<Atom>>>,
@@ -66,8 +154,24 @@ struct Instantiate {
     f: Id<Expr>,
 }
 
+enum CacheResult {
+    Atom(Id<Atom>),
+    Known(bool),
+}
+
+impl CacheResult {
+    fn unwrap_atom(self) -> Id<Atom> {
+        match self {
+            CacheResult::Atom(id) => id,
+            CacheResult::Known(_) => {
+                panic!("Called `unwrap_atom` on a non-atom result")
+            }
+        }
+    }
+}
+
 impl Instantiate {
-    fn run(ctx: &mut Context) {
+    fn run(k: StaticKnowledge, ctx: &mut Context) {
         let mut values = Values::new();
 
         let all_values = Vec::from_iter(ctx.constants.iter_with_id().map(|(i, _)| i));
@@ -83,6 +187,7 @@ impl Instantiate {
         }
 
         let mut rq = Self {
+            k,
             values,
             inst: Vec::new(),
             atoms: HashMap::new(),
@@ -103,9 +208,11 @@ impl Instantiate {
                 // Filter out actions whose preconditions have collapsed to `false`. I'm not sure
                 // what to do about cases that collapse to `true`, as that means they can always be
                 // applied.
-                if a.pre != rq.f {
-                    ctx.actions.add(a);
+                if a.pre == rq.f {
+                    continue;
                 }
+
+                ctx.actions.add(a);
             }
         }
     }
@@ -157,24 +264,6 @@ impl Instantiate {
         Id::none()
     }
 
-    fn cache_atom(&mut self, c: &mut Context, pred: Id<Predicate>, args: Vec<Var>) -> Id<Atom> {
-        let preds = self.atoms.entry(pred).or_default();
-        let key = Vec::from_iter(args.iter().map(|var| {
-            let VarKind::Const { id } = var.kind else {
-                panic!("All atoms should be instantiated at this point")
-            };
-            id
-        }));
-
-        if let Some(id) = preds.get(&key) {
-            *id
-        } else {
-            let id = c.atoms.add(Atom { pred, args });
-            preds.insert(key, id);
-            id
-        }
-    }
-
     fn from_var(&mut self, var: &Var) -> Option<Var> {
         match var.kind {
             VarKind::Param { ix } => {
@@ -191,13 +280,27 @@ impl Instantiate {
         }
     }
 
-    fn from_atom(&mut self, ctx: &mut Context, id: Id<Atom>) -> Id<Atom> {
-        let Atom { pred, args } = &ctx.atoms[id];
+    fn from_atom(&mut self, ctx: &mut Context, id: Id<Atom>) -> CacheResult {
+        let &Atom { pred, ref args } = &ctx.atoms[id];
         let args = Vec::from_iter(
             args.into_iter()
                 .map(|var| self.from_var(var).unwrap_or_else(|| var.clone())),
         );
-        self.cache_atom(ctx, *pred, args)
+
+        let key = Vec::from_iter(args.iter().map(|var| var.kind.unwrap_const()));
+
+        if ctx.predicates[pred].is_const {
+            return CacheResult::Known(self.k.is_known(pred, key.as_slice()));
+        }
+
+        let preds = self.atoms.entry(pred).or_default();
+        if let Some(id) = preds.get(&key) {
+            CacheResult::Atom(*id)
+        } else {
+            let id = ctx.atoms.add(Atom { pred, args: args });
+            preds.insert(key, id);
+            CacheResult::Atom(id)
+        }
     }
 
     fn from_eff(&mut self, ctx: &mut Context, id: Id<Effect>) -> Id<Effect> {
@@ -218,7 +321,7 @@ impl Instantiate {
             }
 
             Effect::Atom { neg, atom } => {
-                let satom = self.from_atom(ctx, *atom);
+                let satom = self.from_atom(ctx, *atom).unwrap_atom();
                 if satom == *atom {
                     id
                 } else {
@@ -231,7 +334,7 @@ impl Instantiate {
 
             Effect::Intends { actor, neg, atom } => {
                 let sactor = self.from_var(actor);
-                let satom = self.from_atom(ctx, *atom);
+                let satom = self.from_atom(ctx, *atom).unwrap_atom();
                 if sactor.is_none() && satom == *atom {
                     id
                 } else {
@@ -254,43 +357,45 @@ impl Instantiate {
         let res = match &expr {
             Expr::And { exprs } => {
                 let mut changed = false;
-                let mut collapsed = false;
-                let effects = Vec::from_iter(exprs.into_iter().filter_map(|id| {
+                let effects = Vec::from_iter(exprs.into_iter().map(|id| {
                     let sid = self.from_expr(ctx, *id);
                     changed = changed || sid != *id;
-                    collapsed = collapsed || sid == self.f;
-                    (sid != self.t).then_some(sid)
+                    sid
                 }));
                 if !changed {
                     id
-                } else if collapsed {
-                    self.f
                 } else {
-                    Expr::and(ctx, effects)
+                    let res = Expr::and(ctx, effects);
+                    res
                 }
             }
 
             // TODO: evaluation of static knowledge
-            Expr::Atom { neg, atom } => {
-                let satom = self.from_atom(ctx, *atom);
-                if satom == *atom {
-                    id
-                } else {
-                    ctx.exprs.add(Expr::Atom {
-                        neg: *neg,
-                        atom: satom,
-                    })
+            Expr::Atom { neg, atom } => match self.from_atom(ctx, *atom) {
+                CacheResult::Atom(satom) => {
+                    if satom == *atom {
+                        id
+                    } else {
+                        ctx.exprs.add(Expr::Atom {
+                            neg: *neg,
+                            atom: satom,
+                        })
+                    }
                 }
-            }
+                CacheResult::Known(valid) => {
+                    if valid != *neg {
+                        self.t
+                    } else {
+                        self.f
+                    }
+                }
+            },
 
             Expr::Eq { neg, left, right } => {
                 let sleft = self.from_var(left).expect("Unbound parameter");
                 let sright = self.from_var(right).expect("Unbound parameter");
-                if *neg == (sleft.kind != sright.kind) {
-                    self.t
-                } else {
-                    self.f
-                }
+                let equal = sleft.kind == sright.kind;
+                if *neg != equal { self.t } else { self.f }
             }
 
             Expr::True | Expr::False => id,

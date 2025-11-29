@@ -30,6 +30,22 @@ impl And for Expr {
             }
         }
 
+        let mut collapsed = Id::none();
+        exprs.retain(|id| {
+            match &c.exprs[*id] {
+                Expr::True => return false,
+                Expr::False => {
+                    collapsed = *id;
+                }
+                _ => {}
+            }
+            true
+        });
+
+        if collapsed.exists() {
+            return collapsed
+        }
+
         match exprs.len() {
             0 => c.exprs.add(Expr::True),
             1 => exprs[0],
@@ -156,11 +172,20 @@ pub enum Expr {
 
 #[derive(Clone, Debug)]
 pub enum Effect {
-    Atom { neg: bool, atom: Id<Atom> },
+    Atom {
+        neg: bool,
+        atom: Id<Atom>,
+    },
 
-    And { effects: Vec<Id<Effect>> },
+    And {
+        effects: Vec<Id<Effect>>,
+    },
 
-    Intends { actor: Var, neg: bool, atom: Id<Atom> },
+    Intends {
+        actor: Var,
+        neg: bool,
+        atom: Id<Atom>,
+    },
 
     // NOTE: These would probably be better to reserve in the effect arena and have a canonical
     // value instead of making it show up all over the place, but it's also a really convenient

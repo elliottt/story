@@ -11,6 +11,12 @@ pub struct Graph<'a> {
     effects: Arena<Effect>,
 }
 
+#[derive(Debug)]
+pub struct Stats {
+    pub facts: usize,
+    pub effects: usize,
+}
+
 impl<'a> Graph<'a> {
     pub fn build(c: &'a mut Context) -> Self {
         let mut builder = GraphBuilder {
@@ -28,6 +34,13 @@ impl<'a> Graph<'a> {
         // TODO: process init and goal to ensure that those atoms make it into the graph
 
         builder.build(c)
+    }
+
+    pub fn stats(&self) -> Stats {
+        Stats {
+            facts: self.facts.len(),
+            effects: self.effects.len(),
+        }
     }
 }
 
