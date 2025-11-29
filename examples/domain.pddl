@@ -47,5 +47,6 @@
            (scary ?actor))
 
     :effect
-      (scared ?target))
+      (and (scared ?target)
+           (intends ?target (not (alive ?actor)))))
 )

@@ -176,6 +176,17 @@ impl Pretty for Effect {
             Effect::And { effects } => {
                 apply("and", effects.iter().map(|e| c.effects[*e].to_doc(c, ps)))
             }
+            Effect::Intends { actor, neg, atom } if *neg => apply(
+                "intends",
+                [
+                    actor.to_doc(c, ps),
+                    apply("not", [c.atoms[*atom].to_doc(c, ps)]),
+                ],
+            ),
+            Effect::Intends { actor, atom, .. } => apply(
+                "intends",
+                [actor.to_doc(c, ps), c.atoms[*atom].to_doc(c, ps)],
+            ),
             Effect::Atom { neg, atom } if *neg => apply("not", [c.atoms[*atom].to_doc(c, ps)]),
             Effect::Atom { atom, .. } => c.atoms[*atom].to_doc(c, ps),
             Effect::True => BoxDoc::text("#t"),

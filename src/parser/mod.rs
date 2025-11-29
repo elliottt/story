@@ -467,7 +467,11 @@ fn parse_expr(
                     "=" => {
                         let left = parse_var(p, context, params)?;
                         let right = parse_var(p, context, params)?;
-                        Result::Ok(context.exprs.add(Expr::Eq { neg: true, left, right }))
+                        Result::Ok(context.exprs.add(Expr::Eq {
+                            neg: true,
+                            left,
+                            right,
+                        }))
                     }
                     _ => {
                         if let Some(atom) = parse_atom(p, context, params, next)? {
@@ -482,7 +486,11 @@ fn parse_expr(
             "=" => {
                 let left = parse_var(p, context, params)?;
                 let right = parse_var(p, context, params)?;
-                Result::Ok(context.exprs.add(Expr::Eq { neg: false, left, right }))
+                Result::Ok(context.exprs.add(Expr::Eq {
+                    neg: false,
+                    left,
+                    right,
+                }))
             }
 
             "and" => {
@@ -502,6 +510,26 @@ fn parse_expr(
     })
 }
 
+fn parse_neg_atom(
+    p: &mut Parser<'_>,
+    c: &mut Context,
+    params: &[Param],
+    next: lexer::Lexeme,
+) -> parser::Result<(bool, Option<Id<Atom>>)> {
+    match p.text(next.loc) {
+        "not" => p.list(|p| {
+            let next = p.expect(Token::Atom)?;
+            let atom = parse_atom(p, c, params, next)?;
+            Ok((true, atom))
+        }),
+
+        _ => {
+            let atom = parse_atom(p, c, params, next)?;
+            Ok((false, atom))
+        }
+    }
+}
+
 fn parse_effect(
     p: &mut Parser<'_>,
     context: &mut Context,
@@ -510,22 +538,25 @@ fn parse_effect(
     p.list(|p| {
         let next = p.expect(Token::Atom)?;
         match p.text(next.loc) {
-            "not" => p.list(|p| {
-                let next = p.expect(Token::Atom)?;
-                if let Some(atom) = parse_atom(p, context, params, next)? {
-                    Result::Ok(context.effects.add(Effect::Atom { neg: true, atom }))
-                } else {
-                    Result::Ok(Id::none())
-                }
-            }),
             "and" => {
                 let mut effects = parse_effect_list(p, context, params)?;
                 effects.retain(|id| id.exists());
                 Result::Ok(Effect::and(context, effects))
             }
+            "intends" => {
+                let actor = parse_var(p, context, params)?;
+                p.list(|p| {
+                    let next = p.expect(Token::Atom)?;
+                    if let (neg, Some(atom)) = parse_neg_atom(p, context, params, next)? {
+                        Result::Ok(context.effects.add(Effect::Intends { actor, neg, atom }))
+                    } else {
+                        Result::Ok(Id::none())
+                    }
+                })
+            }
             _ => {
-                if let Some(atom) = parse_atom(p, context, params, next)? {
-                    Result::Ok(context.effects.add(Effect::Atom { neg: false, atom }))
+                if let (neg, Some(atom)) = parse_neg_atom(p, context, params, next)? {
+                    Result::Ok(context.effects.add(Effect::Atom { neg, atom }))
                 } else {
                     Result::Ok(Id::none())
                 }
@@ -582,6 +613,13 @@ fn parse_action(p: &mut Parser<'_>, context: &mut Context) -> parser::Result<()>
                 );
             }
         }
+    }
+
+    if action.effect.exists() && !action.params.iter().any(|p| p.name == "?actor") {
+        p.error(
+            action.loc,
+            format!("Intents supplied with no `?actor` parameter"),
+        );
     }
 
     context.actions.add(action);

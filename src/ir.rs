@@ -160,6 +160,8 @@ pub enum Effect {
 
     And { effects: Vec<Id<Effect>> },
 
+    Intends { actor: Var, neg: bool, atom: Id<Atom> },
+
     // NOTE: These would probably be better to reserve in the effect arena and have a canonical
     // value instead of making it show up all over the place, but it's also a really convenient
     // default.

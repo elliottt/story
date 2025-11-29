@@ -76,6 +76,8 @@ struct Effect {
 
     adds: HashSet<Id<Fact>>,
     dels: HashSet<Id<Fact>>,
+
+    intents: HashSet<(Id<ir::Constant>, Id<Fact>)>,
 }
 
 struct GraphBuilder {
@@ -126,6 +128,7 @@ impl GraphBuilder {
             active_pre: 0,
             adds: HashSet::new(),
             dels: HashSet::new(),
+            intents: HashSet::new(),
         });
 
         let mut preconds = HashSet::new();
@@ -137,7 +140,8 @@ impl GraphBuilder {
 
         let mut adds = HashSet::new();
         let mut dels = HashSet::new();
-        self.process_adds_dels(&mut adds, &mut dels, c, action.effect);
+        let mut intents = HashSet::new();
+        self.process_adds_dels_intents(&mut adds, &mut dels, &mut intents, c, action.effect);
 
         for id in &adds {
             self.facts[*id].added_by.insert(eid);
@@ -148,6 +152,7 @@ impl GraphBuilder {
 
         self.effects[eid].adds = adds;
         self.effects[eid].dels = dels;
+        self.effects[eid].intents = intents;
 
         eid
     }
@@ -169,10 +174,11 @@ impl GraphBuilder {
         }
     }
 
-    fn process_adds_dels(
+    fn process_adds_dels_intents(
         &mut self,
         adds: &mut HashSet<Id<Fact>>,
         dels: &mut HashSet<Id<Fact>>,
+        intents: &mut HashSet<(Id<ir::Constant>, Id<Fact>)>,
         c: &Context,
         id: Id<ir::Effect>,
     ) {
@@ -185,9 +191,17 @@ impl GraphBuilder {
                     adds.insert(fact);
                 }
             }
+            ir::Effect::Intends { actor, neg, atom } => {
+                assert!(
+                    !*neg,
+                    "Negation should have been removed from intents before graph construction"
+                );
+                let fact = self.add_fact(&c.atoms[*atom]);
+                intents.insert((actor.kind.unwrap_const(), fact));
+            }
             ir::Effect::And { effects } => {
                 for id in effects {
-                    self.process_adds_dels(adds, dels, c, *id);
+                    self.process_adds_dels_intents(adds, dels, intents, c, *id);
                 }
             }
             ir::Effect::True => {}

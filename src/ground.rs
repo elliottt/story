@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     arena::Id,
     ir::{
-        And, Arena, Atom, Constant, Context, Effect, Expr, NamedArena, Param, Predicate,
-        Type, Var, VarKind,
+        And, Arena, Atom, Constant, Context, Effect, Expr, NamedArena, Param, Predicate, Type, Var,
+        VarKind,
     },
 };
 
@@ -44,7 +44,7 @@ fn used_effect_preds(
     effect: Id<Effect>,
 ) {
     match &effects[effect] {
-        Effect::Atom { atom, .. } => {
+        Effect::Atom { atom, .. } | Effect::Intends { atom, .. } => {
             predicates[atoms[*atom].pred].is_const = false;
         }
         Effect::And { effects: es } => {
@@ -229,6 +229,20 @@ impl Instantiate {
                 }
             }
 
+            Effect::Intends { actor, neg, atom } => {
+                let sactor = self.from_var(actor);
+                let satom = self.from_atom(ctx, *atom);
+                if sactor.is_none() && satom == *atom {
+                    id
+                } else {
+                    ctx.effects.add(Effect::Intends {
+                        actor: sactor.unwrap_or_else(|| actor.clone()),
+                        neg: *neg,
+                        atom: satom,
+                    })
+                }
+            }
+
             Effect::True => id,
         };
         ctx.effects[id] = eff;
@@ -262,7 +276,10 @@ impl Instantiate {
                 if satom == *atom {
                     id
                 } else {
-                    ctx.exprs.add(Expr::Atom { neg: *neg, atom: satom })
+                    ctx.exprs.add(Expr::Atom {
+                        neg: *neg,
+                        atom: satom,
+                    })
                 }
             }
 
@@ -335,13 +352,21 @@ impl NegativePreconds {
 
     fn from_effect(&mut self, c: &Context, id: Id<Effect>) {
         match &c.effects[id] {
+            Effect::Intends { neg, atom, .. } if *neg => {
+                let &Atom { pred, .. } = &c.atoms[*atom];
+
+                if !c.predicates[pred].is_const {
+                    self.preconds.insert(pred);
+                }
+            }
+
             Effect::And { effects } => {
                 for id in effects {
                     self.from_effect(c, *id);
                 }
             }
 
-            Effect::Atom { .. } | Effect::True => {}
+            Effect::Atom { .. } | Effect::Intends { .. } | Effect::True => {}
         }
     }
 
@@ -389,6 +414,25 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
             }
         }
 
+        // We only remove negation from intents by using a negated predicate.
+        Effect::Intends { actor, neg, atom } if *neg => {
+            let Atom { pred, args } = &c.atoms[*atom];
+            if let Some(nid) = negs.get(pred) {
+                let natom = c.atoms.add(Atom {
+                    pred: *nid,
+                    args: args.clone(),
+                });
+
+                c.effects.add(Effect::Intends {
+                    actor: actor.clone(),
+                    neg: false,
+                    atom: natom,
+                })
+            } else {
+                id
+            }
+        }
+
         Effect::And { effects } => {
             let mut changed = false;
             let neffects = Vec::from_iter(effects.iter().copied().map(|id| {
@@ -403,7 +447,7 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
             }
         }
 
-        Effect::True => id,
+        Effect::Intends { .. } | Effect::True => id,
     };
     c.effects[id] = eff;
     res
@@ -429,7 +473,10 @@ fn translate_negative_exprs(negs: &NegatedPreds, c: &mut Context, id: Id<Expr>) 
                     pred: *npred,
                     args: args.clone(),
                 });
-                c.exprs.add(Expr::Atom { neg: false, atom: natom })
+                c.exprs.add(Expr::Atom {
+                    neg: false,
+                    atom: natom,
+                })
             } else {
                 id
             }
