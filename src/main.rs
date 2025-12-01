@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
         ground(&mut context);
         println!("{}", print_context(&context));
         let graph = Graph::build(&mut context);
+        println!("{:#?}", graph);
         println!("{:#?}", graph.stats());
     }
 

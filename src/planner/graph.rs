@@ -42,6 +42,21 @@ impl<'a> Graph<'a> {
             effects: self.effects.len(),
         }
     }
+
+    pub fn reset(&mut self) {
+        for fact in self.facts.iter_mut() {
+            fact.level = Level::INVALID;
+            fact.enabled = false;
+            fact.dirty = false;
+        }
+
+        for eff in self.effects.iter_mut() {
+            eff.level = Level::INVALID;
+            eff.enabled = false;
+            eff.dirty = false;
+            eff.active_pre = 0;
+        }
+    }
 }
 
 /// The level that an action or fact was enabled at.
@@ -86,6 +101,10 @@ struct Effect {
 
     /// The number of active preconditions this effect has.
     active_pre: u16,
+
+    /// When this is an effect that requires character motivation, the actor parameter specifies
+    /// the character that must be acting intentionally.
+    actor: Id<ir::Constant>,
 
     adds: HashSet<Id<Fact>>,
     dels: HashSet<Id<Fact>>,
@@ -132,40 +151,44 @@ impl GraphBuilder {
     }
 
     fn add_action(&mut self, c: &Context, id: Id<Action>, action: &Action) -> Id<Effect> {
-        let eid = self.effects.add(Effect {
-            action: id,
-            level: Level::INVALID,
-            enabled: false,
-            dirty: false,
-            total_pre: 0,
-            active_pre: 0,
-            adds: HashSet::new(),
-            dels: HashSet::new(),
-            intents: HashSet::new(),
-        });
+        let mut actor = Id::none();
+        for (ix, p) in action.params.iter().enumerate() {
+            if p.name == "?actor" {
+                actor = action.inst[ix];
+                break;
+            }
+        }
 
         let mut preconds = HashSet::new();
         self.process_pre(&mut preconds, c, action.pre);
-        for id in &preconds {
-            self.facts[*id].required_by.insert(eid);
-        }
-        self.effects[eid].total_pre = u16::try_from(preconds.len()).unwrap();
 
         let mut adds = HashSet::new();
         let mut dels = HashSet::new();
         let mut intents = HashSet::new();
         self.process_adds_dels_intents(&mut adds, &mut dels, &mut intents, c, action.effect);
 
-        for id in &adds {
+        let eid = self.effects.add(Effect {
+            action: id,
+            level: Level::INVALID,
+            enabled: false,
+            dirty: false,
+            total_pre: u16::try_from(preconds.len()).unwrap(),
+            active_pre: 0,
+            actor,
+            adds,
+            dels,
+            intents,
+        });
+
+        for id in &preconds {
+            self.facts[*id].required_by.insert(eid);
+        }
+        for id in &self.effects[eid].adds {
             self.facts[*id].added_by.insert(eid);
         }
-        for id in &dels {
+        for id in &self.effects[eid].dels {
             self.facts[*id].deleted_by.insert(eid);
         }
-
-        self.effects[eid].adds = adds;
-        self.effects[eid].dels = dels;
-        self.effects[eid].intents = intents;
 
         eid
     }
