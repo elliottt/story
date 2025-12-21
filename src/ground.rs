@@ -10,15 +10,17 @@ use crate::{
 };
 
 // TODO: grounding needs to be able to report errors.
-pub fn ground(context: &mut Context) {
+pub fn ground(context: &mut Context) -> anyhow::Result<()> {
     // Determine constant predicates by determining which ones don't show up in action effects.
     let knowledge = determine_const_predicates(context);
 
     // Instantiate all actions so that we only deal with concrete atoms from here.
-    Instantiate::run(knowledge, context);
+    Instantiate::run(knowledge, context)?;
 
     // Introduce copies of predicates used as negative preconditions
-    remove_negative_preconditions(context)
+    remove_negative_preconditions(context)?;
+
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -198,7 +200,7 @@ impl CacheResult {
 }
 
 impl Instantiate {
-    fn run(k: StaticKnowledge, ctx: &mut Context) {
+    fn run(k: StaticKnowledge, ctx: &mut Context) -> anyhow::Result<()> {
         let mut values = Values::new();
 
         let all_values = Vec::from_iter(ctx.constants.iter_with_id().map(|(i, _)| i));
@@ -242,6 +244,20 @@ impl Instantiate {
                 ctx.actions.add(a);
             }
         }
+
+        ctx.init = rq.from_eff(ctx, ctx.init);
+
+        {
+            let goal = rq.from_expr(ctx, ctx.goal);
+
+            if goal == rq.f {
+                anyhow::bail!("Goal is unsatisfiable");
+            }
+
+            ctx.goal = goal;
+        }
+
+        Ok(())
     }
 
     fn all_insts(&self, ps: &[Param]) -> Vec<Vec<Id<Constant>>> {
@@ -429,7 +445,7 @@ impl Instantiate {
     }
 }
 
-fn remove_negative_preconditions(c: &mut Context) {
+fn remove_negative_preconditions(c: &mut Context) -> anyhow::Result<()> {
     let mut ps = NegativePreconds::new();
     for action in c.actions.iter() {
         ps.from_expr(c, action.pre);
@@ -447,7 +463,7 @@ fn remove_negative_preconditions(c: &mut Context) {
 
     // If there weren't any negative preconditions, we can exit early.
     if negatives.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Otherwise, we rewrite for mutual exclusion in the effects, and remove negations in favor of
@@ -462,6 +478,8 @@ fn remove_negative_preconditions(c: &mut Context) {
 
     c.init = translate_negative_effects(&mut m, &negatives, c, c.init);
     c.goal = translate_negative_exprs(&mut m, &negatives, c, c.goal);
+
+    Ok(())
 }
 
 type NegatedPreds = HashMap<Id<Predicate>, Id<Predicate>>;
@@ -612,9 +630,9 @@ fn translate_negative_exprs(
             let &Atom { pred, ref args } = &c.atoms[*atom];
             if let Some(npred) = negs.get(&pred) {
                 let args = args.clone();
-                let natom = m.entry(*atom).or_insert_with(|| {
-                    c.atoms.add(Atom { pred: *npred, args })
-                });
+                let natom = m
+                    .entry(*atom)
+                    .or_insert_with(|| c.atoms.add(Atom { pred: *npred, args }));
 
                 c.exprs.add(Expr::Atom {
                     neg: false,

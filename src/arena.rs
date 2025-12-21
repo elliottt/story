@@ -68,13 +68,13 @@ impl<T> Clone for Id<T> {
 
 impl<T> Copy for Id<T> {}
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct IdSet<T> {
     ids: fixedbitset::FixedBitSet,
     _elem: std::marker::PhantomData<T>,
 }
 
-impl<T: 'static> IdSet<T> {
+impl<T> IdSet<T> {
     /// Construct a new id set.
     pub fn new() -> Self {
         IdSet {
@@ -111,7 +111,32 @@ impl<T: 'static> IdSet<T> {
     pub fn len(&self) -> usize {
         self.ids.count_ones(..)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
+
+impl<T> std::hash::Hash for IdSet<T> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.ids.hash(state);
+        self._elem.hash(state);
+    }
+}
+
+impl<T> Clone for IdSet<T> {
+    fn clone(&self) -> Self {
+        Self { ids: self.ids.clone(), _elem: self._elem.clone() }
+    }
+}
+
+impl<T> PartialEq for IdSet<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.ids == other.ids
+    }
+}
+
+impl<T> Eq for IdSet<T> {}
 
 #[derive(Debug, Clone)]
 pub struct Arena<T> {

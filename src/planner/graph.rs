@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 pub struct Graph<'a> {
-    c: &'a Context,
+    pub c: &'a Context,
     facts: Arena<Fact>,
     effects: Arena<Effect>,
 }
@@ -19,7 +19,7 @@ pub struct Stats {
 }
 
 impl<'a> Graph<'a> {
-    pub fn build(c: &'a mut Context) -> Self {
+    pub fn build(c: &'a mut Context) -> (Self, IdSet<Fact>, IdSet<Fact>) {
         let num_effects = c.actions.len();
 
         let mut builder = GraphBuilder {
@@ -41,9 +41,27 @@ impl<'a> Graph<'a> {
             builder.update_action(c, id, action);
         }
 
-        // TODO: process init and goal to ensure that those atoms make it into the graph
+        builder.enter_adds_dels_intents(c, c.init);
+        builder.enter_pre(c, c.goal);
 
-        builder.build(c)
+        // It's fine for deletions to exist in the initial state, as they can be safely ignored
+        // after negative preconditions have been translated away.
+        let mut dels = IdSet::with_capacity(builder.facts.len());
+
+        // Only defined to reuse process_adds_dels_intents.
+        let mut intents = Vec::new();
+
+        let mut init = IdSet::with_capacity(builder.facts.len());
+        builder.process_adds_dels_intents(&mut init, &mut dels, &mut intents, c, c.init);
+        assert!(
+            intents.is_empty(),
+            "Intents aren't supported in the init state"
+        );
+
+        let mut goal = IdSet::with_capacity(builder.facts.len());
+        builder.process_pre(&mut goal, c, c.goal);
+
+        (builder.build(c), init, goal)
     }
 
     pub fn stats(&self) -> Stats {
@@ -98,6 +116,20 @@ pub struct Fact {
 }
 
 #[derive(Debug)]
+pub struct Intent {
+    pub actor: Id<ir::Constant>,
+    pub fact: Id<Fact>,
+}
+
+impl Intent {
+    pub fn new(actor: Id<ir::Constant>, fact: Id<Fact>) -> Self {
+        Self { actor, fact }
+    }
+}
+
+pub type Intents = Vec<Intent>;
+
+#[derive(Debug)]
 pub struct Effect {
     action: Id<ir::Action>,
     level: Level,
@@ -117,7 +149,7 @@ pub struct Effect {
     adds: IdSet<Fact>,
     dels: IdSet<Fact>,
 
-    intents: HashSet<(Id<ir::Constant>, Id<Fact>)>,
+    intents: Intents,
 }
 
 struct GraphBuilder {
@@ -172,7 +204,7 @@ impl GraphBuilder {
             actor: Id::none(),
             adds: IdSet::new(),
             dels: IdSet::new(),
-            intents: HashSet::new(),
+            intents: Vec::new(),
         })
     }
 
@@ -220,7 +252,7 @@ impl GraphBuilder {
 
         let mut adds = IdSet::with_capacity(self.facts.len());
         let mut dels = IdSet::with_capacity(self.facts.len());
-        let mut intents = HashSet::new();
+        let mut intents = Vec::new();
         self.process_adds_dels_intents(&mut adds, &mut dels, &mut intents, c, action.effect);
 
         for id in preconds.iter() {
@@ -274,7 +306,7 @@ impl GraphBuilder {
         &mut self,
         adds: &mut IdSet<Fact>,
         dels: &mut IdSet<Fact>,
-        intents: &mut HashSet<(Id<ir::Constant>, Id<Fact>)>,
+        intents: &mut Intents,
         c: &Context,
         id: Id<ir::Effect>,
     ) {
@@ -293,7 +325,7 @@ impl GraphBuilder {
                     "Negation should have been removed from intents before graph construction"
                 );
                 let fact = self.get_fact(*atom);
-                intents.insert((actor.kind.unwrap_const(), fact));
+                intents.push(Intent::new(actor.kind.unwrap_const(), fact));
             }
             ir::Effect::And { effects } => {
                 for id in effects {

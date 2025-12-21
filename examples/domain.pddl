@@ -54,4 +54,14 @@
 
     :effect
       (and (scared ?target)))
+
+  (:action kill
+    :parameters (?actor ?target - character ?where - location)
+    :precondition
+      (and (at-location ?actor ?where)
+           (at-location ?target ?where)
+           (scared ?target)
+           (alive ?target))
+    :effect
+      (not (alive ?target)))
 )

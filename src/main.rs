@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use story::{File, Files, ground, ir::Context, parser, print_context, planner::Graph};
+use story::{File, Files, ground, ir::Context, parser, planner, planner::Graph, print_context};
 
 #[derive(Parser, Debug)]
 #[command()]
@@ -44,11 +44,13 @@ fn main() -> anyhow::Result<()> {
             e.print(&mut cache)?;
         }
     } else {
-        ground(&mut context);
-        println!("{}", print_context(&context));
-        let graph = Graph::build(&mut context);
-        println!("{:#?}", graph);
+        ground(&mut context)?;
+        // println!("{}", print_context(&context));
+        let (graph, init, goal) = Graph::build(&mut context);
+        // println!("{:#?}", graph);
         println!("{:#?}", graph.stats());
+
+        planner::plan(graph, init, goal);
     }
 
     Result::Ok(())
