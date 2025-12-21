@@ -408,6 +408,7 @@ impl Instantiate {
 fn remove_negative_preconditions(c: &mut Context) {
     let mut ps = NegativePreconds::new();
     for action in c.actions.iter() {
+        ps.from_expr(c, action.pre);
         ps.from_effect(c, action.effect);
     }
     ps.from_effect(c, c.init);
@@ -429,6 +430,7 @@ fn remove_negative_preconditions(c: &mut Context) {
     // using the negated veresions in the preconditions.
     let mut actions = std::mem::take(&mut c.actions);
     for action in actions.iter_mut() {
+        action.pre = translate_negative_exprs(&negatives, c, action.pre);
         action.effect = translate_negative_effects(&negatives, c, action.effect);
     }
     c.actions = actions;
