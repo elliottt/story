@@ -1,6 +1,7 @@
 use crate::{
-    arena::{Arena, Id},
+    arena::{Arena, Id, IdSet},
     ir::{self, Action, Context, Expr},
+    printing,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -19,16 +20,25 @@ pub struct Stats {
 
 impl<'a> Graph<'a> {
     pub fn build(c: &'a mut Context) -> Self {
+        let num_effects = c.actions.len();
+
         let mut builder = GraphBuilder {
-            atom_map: AtomMap::new(),
+            num_effects,
+            atom_map: HashMap::new(),
             facts: Arena::new(),
             effects: Arena::new(),
         };
 
-        builder.effects.reserve(c.actions.len());
+        builder.effects.reserve(num_effects);
 
+        // pre-populate the facts and effects, so that we can precisely allocate the bitsets.
+        let mut eff_ids = Vec::with_capacity(num_effects);
         for (id, action) in c.actions.iter_with_id() {
-            builder.add_action(c, id, action);
+            eff_ids.push(builder.enter_effect(c, id, action));
+        }
+
+        for (id, action) in eff_ids.into_iter().zip(c.actions.iter()) {
+            builder.update_action(c, id, action);
         }
 
         // TODO: process init and goal to ensure that those atoms make it into the graph
@@ -69,8 +79,6 @@ impl Level {
     const INVALID: Self = Level { level: u16::MAX };
 }
 
-type AtomMap<T> = HashMap<Id<ir::Predicate>, HashMap<Vec<Id<ir::Constant>>, T>>;
-
 #[derive(Debug)]
 struct GroundedAtom {
     pred: Id<ir::Predicate>,
@@ -78,19 +86,19 @@ struct GroundedAtom {
 }
 
 #[derive(Debug)]
-struct Fact {
+pub struct Fact {
     atom: GroundedAtom,
     level: Level,
     enabled: bool,
     dirty: bool,
 
-    required_by: HashSet<Id<Effect>>,
-    added_by: HashSet<Id<Effect>>,
-    deleted_by: HashSet<Id<Effect>>,
+    required_by: IdSet<Effect>,
+    added_by: IdSet<Effect>,
+    deleted_by: IdSet<Effect>,
 }
 
 #[derive(Debug)]
-struct Effect {
+pub struct Effect {
     action: Id<ir::Action>,
     level: Level,
     enabled: bool,
@@ -106,14 +114,15 @@ struct Effect {
     /// the character that must be acting intentionally.
     actor: Id<ir::Constant>,
 
-    adds: HashSet<Id<Fact>>,
-    dels: HashSet<Id<Fact>>,
+    adds: IdSet<Fact>,
+    dels: IdSet<Fact>,
 
     intents: HashSet<(Id<ir::Constant>, Id<Fact>)>,
 }
 
 struct GraphBuilder {
-    atom_map: AtomMap<Id<Fact>>,
+    num_effects: usize,
+    atom_map: HashMap<Id<ir::Atom>, Id<Fact>>,
     facts: Arena<Fact>,
     effects: Arena<Effect>,
 }
@@ -127,76 +136,127 @@ impl GraphBuilder {
         }
     }
 
-    fn add_fact(&mut self, atom: &ir::Atom) -> Id<Fact> {
-        let args = Vec::from_iter(atom.args.iter().map(|var| var.kind.unwrap_const()));
-        let preds = self.atom_map.entry(atom.pred).or_default();
-        if let Some(id) = preds.get(&args) {
-            *id
-        } else {
-            let id = self.facts.add(Fact {
+    fn get_fact(&self, atom: Id<ir::Atom>) -> Id<Fact> {
+        *self.atom_map.get(&atom).unwrap()
+    }
+
+    fn enter_fact(&mut self, id: Id<ir::Atom>, atom: &ir::Atom) -> Id<Fact> {
+        *self.atom_map.entry(id).or_insert_with(|| {
+            let args = Vec::from_iter(atom.args.iter().map(|var| var.kind.unwrap_const()));
+            self.facts.add(Fact {
                 atom: GroundedAtom {
                     pred: atom.pred,
-                    args: args.clone(),
+                    args: args,
                 },
                 level: Level::INVALID,
                 enabled: false,
                 dirty: false,
-                required_by: HashSet::new(),
-                added_by: HashSet::new(),
-                deleted_by: HashSet::new(),
-            });
-            preds.insert(args, id);
-            id
-        }
+                required_by: IdSet::with_capacity(self.num_effects),
+                added_by: IdSet::with_capacity(self.num_effects),
+                deleted_by: IdSet::with_capacity(self.num_effects),
+            })
+        })
     }
 
-    fn add_action(&mut self, c: &Context, id: Id<Action>, action: &Action) -> Id<Effect> {
-        let mut actor = Id::none();
-        for (ix, p) in action.params.iter().enumerate() {
-            if p.name == "?actor" {
-                actor = action.inst[ix];
-                break;
-            }
-        }
+    fn enter_effect(&mut self, c: &Context, id: Id<Action>, action: &Action) -> Id<Effect> {
+        self.enter_pre(c, action.pre);
+        self.enter_adds_dels_intents(c, action.effect);
 
-        let mut preconds = HashSet::new();
-        self.process_pre(&mut preconds, c, action.pre);
-
-        let mut adds = HashSet::new();
-        let mut dels = HashSet::new();
-        let mut intents = HashSet::new();
-        self.process_adds_dels_intents(&mut adds, &mut dels, &mut intents, c, action.effect);
-
-        let eid = self.effects.add(Effect {
+        self.effects.add(Effect {
             action: id,
             level: Level::INVALID,
             enabled: false,
             dirty: false,
-            total_pre: u16::try_from(preconds.len()).unwrap(),
+            total_pre: 0,
             active_pre: 0,
-            actor,
-            adds,
-            dels,
-            intents,
-        });
-
-        for id in &preconds {
-            self.facts[*id].required_by.insert(eid);
-        }
-        for id in &self.effects[eid].adds {
-            self.facts[*id].added_by.insert(eid);
-        }
-        for id in &self.effects[eid].dels {
-            self.facts[*id].deleted_by.insert(eid);
-        }
-
-        eid
+            actor: Id::none(),
+            adds: IdSet::new(),
+            dels: IdSet::new(),
+            intents: HashSet::new(),
+        })
     }
 
-    fn process_pre(&mut self, preconds: &mut HashSet<Id<Fact>>, c: &Context, e: Id<Expr>) {
+    fn enter_pre(&mut self, c: &Context, e: Id<Expr>) {
         match &c.exprs[e] {
             Expr::Atom { atom, .. } => {
-                preconds.insert(self.add_fact(&c.atoms[*atom]));
+                self.enter_fact(*atom, &c.atoms[*atom]);
+            }
+            Expr::Eq { .. } => {
+                panic!("Equality should have been eliminated before graph building");
+            }
+            Expr::And { exprs } => {
+                for e in exprs {
+                    self.enter_pre(c, *e);
+                }
+            }
+            Expr::True | Expr::False => {}
+        }
+    }
+
+    fn enter_adds_dels_intents(&mut self, c: &Context, id: Id<ir::Effect>) {
+        match &c.effects[id] {
+            &ir::Effect::Atom { atom, .. } => {
+                self.enter_fact(atom, &c.atoms[atom]);
+            }
+            &ir::Effect::Intends { neg, atom, .. } => {
+                assert!(
+                    !neg,
+                    "Negation should have been removed from intents before graph construction"
+                );
+                self.enter_fact(atom, &c.atoms[atom]);
+            }
+            ir::Effect::And { effects } => {
+                for id in effects {
+                    self.enter_adds_dels_intents(c, *id);
+                }
+            }
+            ir::Effect::True => {}
+        }
+    }
+
+    fn update_action(&mut self, c: &Context, eid: Id<Effect>, action: &Action) {
+        let mut preconds = IdSet::with_capacity(self.facts.len());
+        self.process_pre(&mut preconds, c, action.pre);
+
+        let mut adds = IdSet::with_capacity(self.facts.len());
+        let mut dels = IdSet::with_capacity(self.facts.len());
+        let mut intents = HashSet::new();
+        self.process_adds_dels_intents(&mut adds, &mut dels, &mut intents, c, action.effect);
+
+        for id in preconds.iter() {
+            self.facts[id].required_by.insert(eid);
+        }
+        for id in adds.iter() {
+            self.facts[id].added_by.insert(eid);
+        }
+        for id in dels.iter() {
+            self.facts[id].deleted_by.insert(eid);
+        }
+
+        let eff = &mut self.effects[eid];
+
+        eff.total_pre = u16::try_from(preconds.len()).unwrap();
+        eff.adds = adds;
+        eff.dels = dels;
+        eff.intents = intents;
+
+        for (ix, p) in action.params.iter().enumerate() {
+            if p.name == "?actor" {
+                eff.actor = action.inst[ix];
+                break;
+            }
+        }
+    }
+
+    fn process_pre(&mut self, preconds: &mut IdSet<Fact>, c: &Context, e: Id<Expr>) {
+        match &c.exprs[e] {
+            Expr::Atom { neg, atom } => {
+                assert!(
+                    !*neg,
+                    "Negation should have been removed from intents before graph construction {}",
+                    printing::show(c, &c.exprs[e])
+                );
+                preconds.insert(self.get_fact(*atom));
             }
             Expr::Eq { .. } => {
                 panic!("Equality should have been eliminated before graph building");
@@ -212,15 +272,15 @@ impl GraphBuilder {
 
     fn process_adds_dels_intents(
         &mut self,
-        adds: &mut HashSet<Id<Fact>>,
-        dels: &mut HashSet<Id<Fact>>,
+        adds: &mut IdSet<Fact>,
+        dels: &mut IdSet<Fact>,
         intents: &mut HashSet<(Id<ir::Constant>, Id<Fact>)>,
         c: &Context,
         id: Id<ir::Effect>,
     ) {
         match &c.effects[id] {
             ir::Effect::Atom { neg, atom } => {
-                let fact = self.add_fact(&c.atoms[*atom]);
+                let fact = self.get_fact(*atom);
                 if *neg {
                     dels.insert(fact);
                 } else {
@@ -232,7 +292,7 @@ impl GraphBuilder {
                     !*neg,
                     "Negation should have been removed from intents before graph construction"
                 );
-                let fact = self.add_fact(&c.atoms[*atom]);
+                let fact = self.get_fact(*atom);
                 intents.insert((actor.kind.unwrap_const(), fact));
             }
             ir::Effect::And { effects } => {

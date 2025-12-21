@@ -6,6 +6,7 @@ use crate::{
         And, Arena, Atom, Constant, Context, Effect, Expr, NamedArena, Param, Predicate, Type, Var,
         VarKind,
     },
+    printing,
 };
 
 // TODO: grounding needs to be able to report errors.
@@ -18,6 +19,32 @@ pub fn ground(context: &mut Context) {
 
     // Introduce copies of predicates used as negative preconditions
     remove_negative_preconditions(context)
+}
+
+#[derive(Debug)]
+struct AtomMap<T> {
+    preds: HashMap<Id<Predicate>, HashMap<Vec<Id<Constant>>, T>>,
+}
+
+impl<T> AtomMap<T> {
+    fn new() -> Self {
+        Self {
+            preds: HashMap::new(),
+        }
+    }
+
+    fn get_or_create(
+        &mut self,
+        pred: Id<Predicate>,
+        key: Vec<Id<Constant>>,
+        create: impl FnOnce() -> T,
+    ) -> &mut T {
+        self.preds
+            .entry(pred)
+            .or_default()
+            .entry(key)
+            .or_insert_with(create)
+    }
 }
 
 #[derive(Debug)]
@@ -149,7 +176,7 @@ struct Instantiate {
     k: StaticKnowledge,
     values: Values,
     inst: Vec<Vec<Id<Constant>>>,
-    atoms: HashMap<Id<Predicate>, HashMap<Vec<Id<Constant>>, Id<Atom>>>,
+    atoms: AtomMap<Id<Atom>>,
     t: Id<Expr>,
     f: Id<Expr>,
 }
@@ -190,7 +217,7 @@ impl Instantiate {
             k,
             values,
             inst: Vec::new(),
-            atoms: HashMap::new(),
+            atoms: AtomMap::new(),
             t: ctx.exprs.add(Expr::True),
             f: ctx.exprs.add(Expr::False),
         };
@@ -293,14 +320,11 @@ impl Instantiate {
             return CacheResult::Known(self.k.is_known(pred, key.as_slice()));
         }
 
-        let preds = self.atoms.entry(pred).or_default();
-        if let Some(id) = preds.get(&key) {
-            CacheResult::Atom(*id)
-        } else {
-            let id = ctx.atoms.add(Atom { pred, args: args });
-            preds.insert(key, id);
-            CacheResult::Atom(id)
-        }
+        CacheResult::Atom(
+            *self
+                .atoms
+                .get_or_create(pred, key, || ctx.atoms.add(Atom { pred, args })),
+        )
     }
 
     fn from_eff(&mut self, ctx: &mut Context, id: Id<Effect>) -> Id<Effect> {
@@ -428,15 +452,16 @@ fn remove_negative_preconditions(c: &mut Context) {
 
     // Otherwise, we rewrite for mutual exclusion in the effects, and remove negations in favor of
     // using the negated veresions in the preconditions.
+    let mut m = HashMap::new();
     let mut actions = std::mem::take(&mut c.actions);
     for action in actions.iter_mut() {
-        action.pre = translate_negative_exprs(&negatives, c, action.pre);
-        action.effect = translate_negative_effects(&negatives, c, action.effect);
+        action.pre = translate_negative_exprs(&mut m, &negatives, c, action.pre);
+        action.effect = translate_negative_effects(&mut m, &negatives, c, action.effect);
     }
     c.actions = actions;
 
-    c.init = translate_negative_effects(&negatives, c, c.init);
-    c.goal = translate_negative_exprs(&negatives, c, c.goal);
+    c.init = translate_negative_effects(&mut m, &negatives, c, c.init);
+    c.goal = translate_negative_exprs(&mut m, &negatives, c, c.goal);
 }
 
 type NegatedPreds = HashMap<Id<Predicate>, Id<Predicate>>;
@@ -500,20 +525,25 @@ impl NegativePreconds {
     }
 }
 
-fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effect>) -> Id<Effect> {
+fn translate_negative_effects(
+    m: &mut HashMap<Id<Atom>, Id<Atom>>,
+    negs: &NegatedPreds,
+    c: &mut Context,
+    id: Id<Effect>,
+) -> Id<Effect> {
     let eff = std::mem::replace(&mut c.effects[id], Effect::True);
     let res = match &eff {
         Effect::Atom { neg, atom } => {
             let Atom { pred, args } = &c.atoms[*atom];
             if let Some(nid) = negs.get(pred) {
-                let natom = c.atoms.add(Atom {
-                    pred: *nid,
-                    args: args.clone(),
-                });
+                let args = args.clone();
+                let natom = m
+                    .entry(*atom)
+                    .or_insert_with(|| c.atoms.add(Atom { pred: *nid, args }));
 
                 let nid = c.effects.add(Effect::Atom {
                     neg: !*neg,
-                    atom: natom,
+                    atom: *natom,
                 });
                 Effect::and(c, [id, nid])
             } else {
@@ -543,7 +573,7 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
         Effect::And { effects } => {
             let mut changed = false;
             let neffects = Vec::from_iter(effects.iter().copied().map(|id| {
-                let nid = translate_negative_effects(negs, c, id);
+                let nid = translate_negative_effects(m, negs, c, id);
                 changed = changed || id != nid;
                 nid
             }));
@@ -560,13 +590,18 @@ fn translate_negative_effects(negs: &NegatedPreds, c: &mut Context, id: Id<Effec
     res
 }
 
-fn translate_negative_exprs(negs: &NegatedPreds, c: &mut Context, id: Id<Expr>) -> Id<Expr> {
+fn translate_negative_exprs(
+    m: &mut HashMap<Id<Atom>, Id<Atom>>,
+    negs: &NegatedPreds,
+    c: &mut Context,
+    id: Id<Expr>,
+) -> Id<Expr> {
     let expr = std::mem::replace(&mut c.exprs[id], Expr::True);
     let res = match &expr {
         Expr::And { exprs } => {
             let mut changed = false;
             let nexprs = Vec::from_iter(exprs.iter().copied().map(|id| {
-                let nid = translate_negative_exprs(negs, c, id);
+                let nid = translate_negative_exprs(m, negs, c, id);
                 changed = changed || id != nid;
                 nid
             }));
@@ -576,13 +611,14 @@ fn translate_negative_exprs(negs: &NegatedPreds, c: &mut Context, id: Id<Expr>) 
         Expr::Atom { neg, atom } if *neg => {
             let &Atom { pred, ref args } = &c.atoms[*atom];
             if let Some(npred) = negs.get(&pred) {
-                let natom = c.atoms.add(Atom {
-                    pred: *npred,
-                    args: args.clone(),
+                let args = args.clone();
+                let natom = m.entry(*atom).or_insert_with(|| {
+                    c.atoms.add(Atom { pred: *npred, args })
                 });
+
                 c.exprs.add(Expr::Atom {
                     neg: false,
-                    atom: natom,
+                    atom: *natom,
                 })
             } else {
                 id

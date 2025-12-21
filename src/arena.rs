@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-pub struct Id<T: 'static> {
+pub struct Id<T> {
     index: u32,
     _elem: std::marker::PhantomData<T>,
 }
@@ -67,6 +67,51 @@ impl<T> Clone for Id<T> {
 }
 
 impl<T> Copy for Id<T> {}
+
+#[derive(Clone, Debug)]
+pub struct IdSet<T> {
+    ids: fixedbitset::FixedBitSet,
+    _elem: std::marker::PhantomData<T>,
+}
+
+impl<T: 'static> IdSet<T> {
+    /// Construct a new id set.
+    pub fn new() -> Self {
+        IdSet {
+            ids: fixedbitset::FixedBitSet::new(),
+            _elem: Default::default(),
+        }
+    }
+
+    pub fn with_capacity(size: usize) -> Self {
+        IdSet {
+            ids: fixedbitset::FixedBitSet::with_capacity(size),
+            _elem: Default::default(),
+        }
+    }
+
+    pub fn insert(&mut self, id: Id<T>) {
+        if id.exists() {
+            self.ids.set(id.index.try_into().unwrap(), true);
+        }
+    }
+
+    pub fn union(&mut self, other: &Self) {
+        self.ids.union_with(&other.ids);
+    }
+
+    pub fn difference(&mut self, other: &Self) {
+        self.ids.difference_with(&other.ids);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Id<T>> {
+        self.ids.ones().map(Id::new)
+    }
+
+    pub fn len(&self) -> usize {
+        self.ids.count_ones(..)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Arena<T> {
