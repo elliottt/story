@@ -15,6 +15,8 @@
     (alive dragon)
     (alive witch)
 
+    (intends knight (not (alive dragon)))
+
     (scary dragon)
     (connected cave forest)
     (connected forest bridge)

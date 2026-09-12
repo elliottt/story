@@ -19,7 +19,7 @@ pub struct Stats {
 }
 
 impl<'a> Graph<'a> {
-    pub fn build(c: &'a mut Context) -> (Self, IdSet<Fact>, IdSet<Fact>) {
+    pub fn build(c: &'a mut Context) -> (Self, IdSet<Fact>, Intents, IdSet<Fact>) {
         let num_effects = c.actions.len();
 
         let mut builder = GraphBuilder {
@@ -48,20 +48,14 @@ impl<'a> Graph<'a> {
         // after negative preconditions have been translated away.
         let mut dels = IdSet::with_capacity(builder.facts.len());
 
-        // Only defined to reuse process_adds_dels_intents.
-        let mut intents = Vec::new();
-
+        let mut intents = Intents::new();
         let mut init = IdSet::with_capacity(builder.facts.len());
         builder.process_adds_dels_intents(&mut init, &mut dels, &mut intents, c, c.init);
-        assert!(
-            intents.is_empty(),
-            "Intents aren't supported in the init state"
-        );
 
         let mut goal = IdSet::with_capacity(builder.facts.len());
         builder.process_pre(&mut goal, c, c.goal);
 
-        (builder.build(c), init, goal)
+        (builder.build(c), init, intents, goal)
     }
 
     pub fn stats(&self) -> Stats {

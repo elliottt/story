@@ -64,7 +64,7 @@ struct Planner<'a> {
 }
 
 impl<'a> Planner<'a> {
-    fn new(graph: Graph<'a>, init: IdSet<Fact>, goal: IdSet<Fact>) -> Self {
+    fn new(graph: Graph<'a>, init: IdSet<Fact>, intents: Intents, goal: IdSet<Fact>) -> Self {
         let mut p = Self {
             seen: HashSet::new(),
             work: BinaryHeap::new(),
@@ -72,7 +72,7 @@ impl<'a> Planner<'a> {
             goal,
         };
 
-        p.push(Id::none(), init, None, Intents::new());
+        p.push(Id::none(), init, None, intents);
 
         p
     }
@@ -109,8 +109,13 @@ impl<'a> Planner<'a> {
     }
 }
 
-pub fn plan(graph: Graph<'_>, init: IdSet<Fact>, goal: IdSet<Fact>) -> Option<Vec<Id<Effect>>> {
-    let mut p = Planner::new(graph, init, goal);
+pub fn plan(
+    graph: Graph<'_>,
+    init: IdSet<Fact>,
+    intents: Intents,
+    goal: IdSet<Fact>,
+) -> Option<Vec<Id<Effect>>> {
+    let mut p = Planner::new(graph, init, intents, goal);
 
     while let Some(node) = p.pop() {
         println!("node: {:?}", node.node);

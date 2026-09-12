@@ -46,11 +46,11 @@ fn main() -> anyhow::Result<()> {
     } else {
         ground(&mut context)?;
         // println!("{}", print_context(&context));
-        let (graph, init, goal) = Graph::build(&mut context);
+        let (graph, init, intents, goal) = Graph::build(&mut context);
         // println!("{:#?}", graph);
         println!("{:#?}", graph.stats());
 
-        planner::plan(graph, init, goal);
+        planner::plan(graph, init, intents, goal);
     }
 
     Result::Ok(())
