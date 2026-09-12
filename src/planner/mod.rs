@@ -15,7 +15,7 @@ pub use graph::Graph;
 pub use relevant_actions::relevant_actions;
 
 /// A node in the search space, along with its heuristic weight.
-#[derive(Debug, PartialOrd)]
+#[derive(Debug)]
 struct Node {
     /// The effect applied in this state. If the id is invalid, this is the init state.
     effect: Id<Effect>,
